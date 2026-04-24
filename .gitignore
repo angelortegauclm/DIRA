@@ -207,3 +207,18 @@ marimo/_lsp/
 __marimo__/
 
 .claude
+
+# ── DIRA: datos y modelos (ficheros grandes, no se versionan) ─────────────────
+data/
+model/
+*.pkl
+*.csv
+
+# ── DIRA: variables de entorno locales ────────────────────────────────────────
+.env.*
+!.env.example
+
+# ── DIRA: MLRun / MLflow ──────────────────────────────────────────────────────
+mlruns/
+mlartifacts/
+project.yaml

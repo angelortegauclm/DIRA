@@ -128,7 +128,6 @@ def train (data_path: str, model_path: str, random_state: int = 42, n_iter: int 
         eval_metric="logloss",
         objective="binary:logistic",
         scale_pos_weight=ratio_peso,
-        use_label_encoder=False,
     )
  
     param_distributions = {

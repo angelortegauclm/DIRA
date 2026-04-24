@@ -40,9 +40,8 @@ class DIRAPredictor:
     def __init__(self, model_path: str = DEFAULT_MODEL_PATH):
         self.model_path = model_path
         self._pipeline = None
-        # Las necesitamos para la API posteriormente
-        self.expected_columns = self.model.feature_names_in_.tolist()
- 
+        self.expected_columns = None
+
     def load(self):
         """Carga el pipeline desde disco"""
         if self._pipeline is None:
@@ -53,6 +52,7 @@ class DIRAPredictor:
                 )
             print(f"[infer] Cargando modelo desde: {self.model_path}")
             self._pipeline = joblib.load(self.model_path)
+            self.expected_columns = self._pipeline[0].feature_names_in_.tolist()
             print("[infer] Modelo cargado.")
         return self
  
@@ -87,7 +87,7 @@ class DIRAPredictor:
                 nivel = "BAJO RIESGO (Verde)"
                 accion = "Mantener hábitos saludables. Revisión preventiva en 2 años."
             elif prob < UMBRAL_ALTO:
-                nivel = "RIESGO MODERADO / SEGUIMIENTO (Amarillo"
+                nivel = "RIESGO MODERADO / SEGUIMIENTO (Amarillo)"
                 accion = "Seguimiento en 6 meses y plan de hábitos saludables."
             else:
                 nivel = "ALTO RIESGO / PRIORITARIO (Rojo)"

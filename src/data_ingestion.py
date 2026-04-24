@@ -19,7 +19,6 @@ Contiene:
       que se han cargado correctamente.
 """
 
-from numpy import unique_values
 import pandas as pd
 import argparse
 import os
@@ -53,7 +52,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--data-path",
         type=str,
-        default=os.getenv(DEFAULT_DATA_PATH),
+        default=DEFAULT_DATA_PATH,
         help="Ruta al archivo CSV de origen. "
     )
     return parser.parse_args()
@@ -71,9 +70,9 @@ def parse_args() -> argparse.Namespace:
 
 # Definimos las columnas binarias, para validar el dataset en estructura y contenido
 BINARY_COLUMNS = [
-    'Diabetes_binary', 'HighBP', 'HighChol', 'CholCheck', 'Smoker', 
+    'Diabetes_binary', 'HighBP', 'HighChol', 'CholCheck', 'Smoker',
     'Stroke', 'HeartDiseaseorAttack', 'PhysActivity', 'Fruits', 'Veggies',
-    'HvyAlcoholConsump', 'AnyHealthcare', 'DiffWalk', 'Sex'
+    'HvyAlcoholConsump', 'AnyHealthcare', 'NoDocbcCost', 'DiffWalk', 'Sex'
 ]
 
 # Definimos los rangos esperados para las columnas numéricas, para validar el dataset en estructura y contenido

@@ -1,11 +1,13 @@
 import os
+import sys
+sys.path.insert(0, os.path.dirname(__file__))
+
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import numpy as np
 import pandas as pd
 from typing import List, Any
-import pandas as pd
 from infer import DIRAPredictor  # Nuestra clase que realiza la predicción y carga el preprocesamiento y el modelo entrenado desde la ruta especificada.
 
 app = FastAPI(
@@ -81,6 +83,7 @@ class InferenceInput(BaseModel):
     data: List[dict]  # Esta variable contendrá los datos de los pacientes
 
 class InferenceRequest(BaseModel):
+    id: str | None = None
     inputs: List[InferenceInput]
 
 @app.post(f"/v2/models/{MODEL_NAME}/infer")
@@ -88,14 +91,11 @@ def infer(request: InferenceRequest):
     try:
         input_tensor = request.inputs[0]
         
-        esperados = abs(input_tensor.shape[0] * input_tensor.shape[1])
-        if len(input_tensor.data) != esperados:
-            raise ValueError(f"Longitud de datos incorrecta. Se esperaban {esperados} valores.")
-        datos_matriz = np.array(input_tensor.data).reshape(input_tensor.shape)
-        
-        # Usamos las columnas que el modelo tiene y que hemos guardado previamente en el atributo expected_columns de la clase DIRAPredictor
-        #  para crear un DataFrame con los datos de entrada
-        df = pd.DataFrame(datos_matriz, columns=predictor.expected_columns)
+        n_pacientes = input_tensor.shape[0]
+        if len(input_tensor.data) != n_pacientes:
+            raise ValueError(f"Longitud de datos incorrecta. Se esperaban {n_pacientes} pacientes, se recibieron {len(input_tensor.data)}.")
+
+        df = pd.DataFrame(input_tensor.data)
         
         # Hacemos la predicción llamando al método predict() de la clase DIRAPredictor, que devuelve un DataFrame con la probabilidad de diabetes,
         # la predicción binaria, el nivel de riesgo y la acción recomendada para cada paciente.
@@ -108,10 +108,10 @@ def infer(request: InferenceRequest):
         #   "nivel_riesgo": nivel,
         #   "accion": accion,
         # en listas separadas para cada output, lo que nos permitirá formatear la respuesta siguiendo el protocolo V2 de MLOps.
-        probs = [p["prob_diabetes"] for p in predicciones]
-        preds = [p["prediccion"] for p in predicciones]
-        niveles = [p["nivel_riesgo"] for p in predicciones]
-        acciones = [p["accion"] for p in predicciones]
+        probs = predicciones["prob_diabetes"].tolist()
+        preds = predicciones["prediccion"].tolist()
+        niveles = predicciones["nivel_riesgo"].tolist()
+        acciones = predicciones["accion"].tolist()
         
         # Formateamos la salida con MÚLTIPLES outputs siguiendo el protocolo V2
         response = {
