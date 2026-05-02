@@ -51,7 +51,8 @@ class DIRAPredictor:
                     "La ruta debe configurarse por comando con --model-path o la variable de entorno MODEL_PATH.\n"
                 )
             print(f"[infer] Cargando modelo desde: {self.model_path}")
-            self._pipeline = cloudpickle.load(self.model_path)
+            with open(self.model_path, "rb") as f:
+                self._pipeline = cloudpickle.load(f)
             self.expected_columns = self._pipeline[0].feature_names_in_.tolist()
             print("[infer] Modelo cargado.")
         return self

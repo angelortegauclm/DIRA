@@ -200,7 +200,7 @@ def train (data_path: str, model_path: str, random_state: int = 42, n_iter: int 
     for k, v in metrics.items():
         print(f"         {k}: {v}")
  
-    # Guardamos el pipeline completo (preprocesador + modelo) utilizando joblib para poder cargarlo posteriormente en el módulo de inferencia.
+    # Guardamos el pipeline completo (preprocesador + modelo) utilizando cloudpickle para poder cargarlo posteriormente en el módulo de inferencia.
     # Reconstruimos el preprocesador desde cero para garantizar que aprende solo de X_train.
     preprocessor_final = construct_preprocessor(X_train)
 
@@ -213,10 +213,8 @@ def train (data_path: str, model_path: str, random_state: int = 42, n_iter: int 
 
     # Guardamos el objeto completo: Preprocesador + XGBoost
     os.makedirs(os.path.dirname(model_path), exist_ok=True)
-    # Usamos cloudpickle para asegurar la compatibilidad con objetos complejos como pipelines de sklearn. 
-    # El nivel de compresión 9 es el máximo para reducir el tamaño del archivo.
-    cloudpickle.dump(pipeline_final_DIRA, model_path, compress=9)  
-   
+    with open(model_path, "wb") as f:
+        cloudpickle.dump(pipeline_final_DIRA, f)
 
     print(f"[train] Pipeline guardado como '{model_path}'")    
 

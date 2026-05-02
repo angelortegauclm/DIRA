@@ -51,18 +51,6 @@ def split_X_y(df: pd.DataFrame, target: str = TARGET_COLUMN):
 
     return X, y
 
-# Esta función limitará el valor máximo de BMI a 60, se aplicará dentro del transformer de la variable.
-def bmi_clipper_function(X):
-    """
-    Limita el BMI a un máximo de 60.
- 
-    Durante el EDA se detectaros valores muy altos llegando a 98 en el dataset, son casos muy raros que sesgarían el modelo; un BMI de 60 ya representa una
-    obesidad mórbida severa y sería suficientemente informativo para el modelo.
-    """
-    return np.clip(X, a_min=None, a_max=60)
-
-
-
 
 
 ###
@@ -80,7 +68,12 @@ def construct_preprocessor(X: pd.DataFrame):
     Returns:
         ColumnTransformer: Un ColumnTransformer que aplica el preprocesamiento adecuado a cada grupo de variables.
     """
-    
+
+    # Definida localmente para que cloudpickle embeba el bytecode en el .pkl
+    # y el contenedor de inferencia no necesite importar features.py
+    def bmi_clipper_function(X):
+        return np.clip(X, a_min=None, a_max=60)
+
     # Eliminar variables sin varianza útil AnyHealthcare y CholCheck
     drop_columns = ['AnyHealthcare', 'CholCheck']
 
