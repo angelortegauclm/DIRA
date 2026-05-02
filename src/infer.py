@@ -13,7 +13,7 @@ import argparse
 import os
 import sys
  
-import joblib
+import cloudpickle
 import numpy as np
 import pandas as pd
 
@@ -51,7 +51,7 @@ class DIRAPredictor:
                     "La ruta debe configurarse por comando con --model-path o la variable de entorno MODEL_PATH.\n"
                 )
             print(f"[infer] Cargando modelo desde: {self.model_path}")
-            self._pipeline = joblib.load(self.model_path)
+            self._pipeline = cloudpickle.load(self.model_path)
             self.expected_columns = self._pipeline[0].feature_names_in_.tolist()
             print("[infer] Modelo cargado.")
         return self
