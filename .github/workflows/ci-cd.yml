@@ -104,10 +104,14 @@ jobs:
               - 'src/data_ingestion.py'
               - 'requirements_train.txt'
 
-      # Instalar el SDK de MLRun en el runner self-hosted para poder orquestar el Job
+      # Instalar el SDK de MLRun en el entorno conda 'dira' (Python 3.9)
+      # mlrun==1.10.0 requiere Python <3.12; el runner usa Python 3.12 por defecto
       - name: Instalar SDK MLRun
         if: steps.model_changes.outputs.model == 'true' || github.event.inputs.run_training == 'true'
-        run: pip install --quiet "mlrun==1.10.0"
+        run: |
+          source /home/angel/.miniconda3/etc/profile.d/conda.sh
+          conda activate dira
+          pip install --quiet "mlrun==1.10.0"
 
       # Lanzar ciclo de vida MLRun solo si cambió código del modelo o se forzó manualmente
       - name: Lanzar entrenamiento y serving – MLRun
@@ -116,7 +120,10 @@ jobs:
           MLRUN_DBPATH: ${{ secrets.MLRUN_DBPATH }}
           TRAIN_IMAGE:  ${{ env.TRAIN_IMAGE }}
           INFER_IMAGE:  ${{ env.INFER_IMAGE }}
-        run: python src/mlrun_project.py
+        run: |
+          source /home/angel/.miniconda3/etc/profile.d/conda.sh
+          conda activate dira
+          python src/mlrun_project.py
 
       # Verificar que el endpoint de inferencia responde después del despliegue
       - name: Health check API de inferencia
