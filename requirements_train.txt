@@ -1,3 +1,4 @@
+# Dependencias del contenedor de entrenamiento
 mlrun==1.10.0
 xgboost-cpu==3.2.0
 scikit-learn
