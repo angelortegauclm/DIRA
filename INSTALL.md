@@ -445,6 +445,17 @@ El SDK de MLRun no está preinstalado en el runner self-hosted. El workflow inst
 automáticamente `mlrun==1.10.0` antes de ejecutar `mlrun_project.py`. Si el paso
 "Instalar SDK MLRun" no aparece en el workflow, actualizar `.github/workflows/ci-cd.yml`.
 
+### El CI/CD falla con `No matching distribution found for mlrun==1.10.0` en el job `deploy`
+
+El runner self-hosted usa Python 3.12 por defecto y `mlrun==1.10.0` requiere `<3.12`.
+El workflow debe activar el entorno conda `dira` (Python 3.9) antes de instalar mlrun:
+```yaml
+run: |
+  source /home/angel/.miniconda3/etc/profile.d/conda.sh
+  conda activate dira
+  pip install --quiet "mlrun==1.10.0"
+```
+
 ---
 
 ## Resumen de comandos de referencia
