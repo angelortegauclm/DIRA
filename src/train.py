@@ -20,12 +20,10 @@ import os
 import sys
 import time
 
-import joblib
-import numpy as np
+import cloudpickle
 import xgboost as xgb
 from scipy.stats import loguniform, uniform, randint
 from sklearn import set_config
-from sklearn.dummy import DummyClassifier
 from sklearn.metrics import average_precision_score, confusion_matrix
 from sklearn.model_selection import (
     RandomizedSearchCV,
@@ -215,7 +213,10 @@ def train (data_path: str, model_path: str, random_state: int = 42, n_iter: int 
 
     # Guardamos el objeto completo: Preprocesador + XGBoost
     os.makedirs(os.path.dirname(model_path), exist_ok=True)
-    joblib.dump(pipeline_final_DIRA, model_path, compress=9)
+    # Usamos cloudpickle para asegurar la compatibilidad con objetos complejos como pipelines de sklearn. 
+    # El nivel de compresión 9 es el máximo para reducir el tamaño del archivo.
+    cloudpickle.dump(pipeline_final_DIRA, model_path, compress=9)  
+   
 
     print(f"[train] Pipeline guardado como '{model_path}'")    
 
