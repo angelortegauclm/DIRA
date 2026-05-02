@@ -1,17 +1,17 @@
 # ── Stage 1: instalar dependencias ──────────────────────────────────────────
-FROM python:3.12-slim AS builder
+FROM mirror.gcr.io/library/python:3.11-slim AS builder
 WORKDIR /app
 
 COPY requirements_infer.txt .
 RUN pip install --no-cache-dir -r requirements_infer.txt "uvicorn[standard]"
 
 # ── Stage 2: imagen final sin pip ni herramientas de build ──────────────────
-FROM python:3.12-slim
+FROM mirror.gcr.io/library/python:3.11-slim
 WORKDIR /app
 
 # Copiar solo site-packages y ejecutables instalados (uvicorn, etc.)
-COPY --from=builder /usr/local/lib/python3.12/site-packages \
-                    /usr/local/lib/python3.12/site-packages
+COPY --from=builder /usr/local/lib/python3.11/site-packages \
+                    /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
 COPY src/features.py  src/

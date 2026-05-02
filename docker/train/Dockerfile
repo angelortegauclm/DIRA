@@ -1,5 +1,5 @@
 # ── Stage 1: instalar dependencias ──────────────────────────────────────────
-FROM python:3.11-slim AS builder
+FROM mirror.gcr.io/library/python:3.11-slim AS builder
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -10,7 +10,7 @@ COPY requirements_train.txt .
 RUN pip install --no-cache-dir -r requirements_train.txt
 
 # ── Stage 2: imagen final ────────────────────────────────────────────────────
-FROM python:3.11-slim
+FROM mirror.gcr.io/library/python:3.11-slim
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends git \

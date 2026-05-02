@@ -80,7 +80,7 @@ class InferenceInput(BaseModel):
     name: str
     shape: List[int]
     datatype: str
-    data: List[dict]  # Esta variable contendrá los datos de los pacientes
+    data: List[Any]  # array plano: shape[0] pacientes × shape[1] features
 
 class InferenceRequest(BaseModel):
     id: str | None = None
@@ -90,12 +90,27 @@ class InferenceRequest(BaseModel):
 def infer(request: InferenceRequest):
     try:
         input_tensor = request.inputs[0]
-        
-        n_pacientes = input_tensor.shape[0]
-        if len(input_tensor.data) != n_pacientes:
-            raise ValueError(f"Longitud de datos incorrecta. Se esperaban {n_pacientes} pacientes, se recibieron {len(input_tensor.data)}.")
 
-        df = pd.DataFrame(input_tensor.data)
+        predictor.load()  # garantiza que expected_columns está disponible
+
+        n_pacientes = input_tensor.shape[0]
+        n_features = input_tensor.shape[1]
+        n_expected = len(predictor.expected_columns)
+
+        if n_features != n_expected:
+            raise ValueError(
+                f"Número de columnas incorrecto. Se esperaban {n_expected}, se recibieron {n_features}."
+            )
+        if len(input_tensor.data) != n_pacientes * n_features:
+            raise ValueError(
+                f"Longitud de datos incorrecta. Se esperaban {n_pacientes * n_features} valores "
+                f"({n_pacientes} pacientes × {n_features} features), se recibieron {len(input_tensor.data)}."
+            )
+
+        df = pd.DataFrame(
+            np.array(input_tensor.data).reshape(n_pacientes, n_features),
+            columns=predictor.expected_columns
+        )
         
         # Hacemos la predicción llamando al método predict() de la clase DIRAPredictor, que devuelve un DataFrame con la probabilidad de diabetes,
         # la predicción binaria, el nivel de riesgo y la acción recomendada para cada paciente.

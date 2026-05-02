@@ -13,6 +13,7 @@ Variables de entorno:
 """
 
 import os
+import subprocess
 import mlrun
 from mlrun.runtimes.mounts import mount_pvc
 
@@ -105,3 +106,14 @@ print(f"  Estado   : {train_run.state()}")
 print("  Métricas :")
 for k, v in train_run.outputs.items():
     print(f"    {k}: {v}")
+
+if train_run.state() == "completed":
+    print("\n[mlrun_project] Reiniciando pod de inferencia para cargar el nuevo modelo...")
+    result = subprocess.run(
+        ["kubectl", "rollout", "restart", "deployment/dira-infer", "-n", "mlrun"],
+        capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        print("[mlrun_project] Pod reiniciado correctamente.")
+    else:
+        print(f"[mlrun_project] Error al reiniciar el pod: {result.stderr}")

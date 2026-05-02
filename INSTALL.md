@@ -12,10 +12,18 @@ Stack: **k3s** (clúster Kubernetes ligero) · **Helm** (despliegue de infraestr
 |---|---|---|---|
 | Sistema operativo | Ubuntu 22.04 / Debian 12 (Linux) | — | `uname -r` |
 | Docker Engine | 24.x | `curl -fsSL https://get.docker.com \| sh` | `docker --version` |
-| Python | 3.11 | `sudo apt install python3.11 python3.11-venv` | `python3 --version` |
-| pip | 23.x | `python3 -m ensurepip --upgrade` | `pip --version` |
+| Python | 3.9 – 3.11 | Ver nota Conda abajo | `python3 --version` |
+| Miniconda | cualquiera | `curl -fsSL https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh \| bash` | `conda --version` |
 | git | 2.x | `sudo apt install git` | `git --version` |
 | curl | cualquiera | `sudo apt install curl` | `curl --version` |
+
+> **Python y Conda:** `mlrun==1.10.0` requiere Python `>=3.9, <3.12`. Crear el entorno
+> conda con Python 3.9 antes del paso 7:
+> ```bash
+> conda create -n dira python=3.9 -y
+> conda activate dira
+> ```
+> Usar siempre `conda activate dira` para ejecutar `mlrun_project.py`.
 
 > Docker debe estar corriendo y el usuario actual debe poder ejecutarlo sin `sudo`:
 > ```bash
@@ -209,9 +217,10 @@ kubectl delete pod data-loader -n dira
 
 ## 7. Instalar el SDK de MLRun (entorno local)
 
-El script `mlrun_project.py` se ejecuta desde tu máquina local y se comunica con el API de MLRun en k3s.
+El script `mlrun_project.py` se ejecuta desde la máquina local y se comunica con el API de MLRun en k3s. Debe ejecutarse dentro del entorno conda `dira` (Python 3.9), ya que `mlrun==1.10.0` no es compatible con Python 3.12.
 
 ```bash
+conda activate dira
 pip install "mlrun==1.10.0"
 ```
 
@@ -225,6 +234,8 @@ pip install "mlrun==1.10.0"
 ## 8. Ejecutar el ciclo de vida del modelo
 
 ```bash
+conda activate dira
+
 # Asegurarse de que MLRUN_DBPATH apunta al API de MLRun en k3s (ver paso 4)
 echo $MLRUN_DBPATH
 
@@ -284,7 +295,7 @@ kubectl get svc -n nuclio | grep dira-infer
 ```
 
 Probar con una petición de ejemplo (protocolo Open Inference V2).  
-El campo `data` es una **lista de objetos** (un objeto por paciente):
+El campo `data` es un **array plano** de números; `shape` indica `[n_pacientes, n_features]`:
 
 ```bash
 curl -X POST http://<node-ip>:<port>/v2/models/modelo_diabetes_DIRA/infer \
@@ -294,22 +305,16 @@ curl -X POST http://<node-ip>:<port>/v2/models/modelo_diabetes_DIRA/infer \
       "name": "paciente_features",
       "shape": [1, 21],
       "datatype": "FP32",
-      "data": [{
-        "HighBP": 1.0, "HighChol": 1.0, "CholCheck": 1.0, "BMI": 35.0,
-        "Smoker": 1.0, "Stroke": 0.0, "HeartDiseaseorAttack": 1.0,
-        "PhysActivity": 0.0, "Fruits": 0.0, "Veggies": 1.0,
-        "HvyAlcoholConsump": 1.0, "AnyHealthcare": 1.0, "NoDocbcCost": 0.0,
-        "GenHlth": 4.0, "MentHlth": 10.0, "PhysHlth": 15.0,
-        "DiffWalk": 1.0, "Sex": 1.0, "Age": 9.0,
-        "Education": 4.0, "Income": 3.0
-      }]
+      "data": [1.0, 1.0, 1.0, 35.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0,
+               1.0, 1.0, 0.0, 4.0, 10.0, 15.0, 1.0, 1.0, 9.0, 4.0, 3.0]
     }]
   }'
 ```
 
-> **Formato del campo `data`:** cada elemento es un diccionario con los 21 campos del
-> paciente. `shape[0]` debe coincidir con la cantidad de diccionarios en `data`.  
-> El campo `id` a nivel de request es opcional (añadido para compatibilidad OIP V2).
+> **Formato del campo `data`:** lista plana de `shape[0] × shape[1]` valores numéricos,
+> en el mismo orden que las columnas del dataset de entrenamiento.  
+> La API valida que `shape[1]` coincida con el número de features del modelo (21).  
+> El campo `id` a nivel de request es opcional (compatibilidad OIP V2).
 
 ---
 
@@ -422,9 +427,10 @@ error en `data_ingestion.py`, eliminar la línea `from numpy import unique_value
 
 ### El endpoint de inferencia devuelve error 422 (Unprocessable Entity)
 
-Verificar que el campo `data` del request es una **lista de objetos** (dicts), no una
-lista plana de números. Cada objeto debe contener los 21 campos del paciente.  
-La longitud de `data` debe coincidir con `shape[0]`.
+Verificar que el campo `data` del request es una **lista plana de números**, no una
+lista de objetos/dicts. La longitud de `data` debe ser `shape[0] × shape[1]` (p.ej.
+2 pacientes × 21 features = 42 valores). Si `shape[1]` no coincide con las 21 columnas
+del modelo la API devuelve error 400 con mensaje descriptivo.
 
 ### `AttributeError: 'DIRAPredictor' object has no attribute '_pipeline'` al arrancar
 
