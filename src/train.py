@@ -17,9 +17,9 @@ Variables de entorno necesarias para la ejecución del módulo:
 
 import argparse
 import os
-import sys  
+import sys
 import time
- 
+
 import joblib
 import numpy as np
 import xgboost as xgb
@@ -220,6 +220,50 @@ def train (data_path: str, model_path: str, random_state: int = 42, n_iter: int 
     print(f"[train] Pipeline guardado como '{model_path}'")    
 
     return metrics
+
+def mlrun_train(context):
+    # context es mlrun.MLClientCtx, inyectado por MLRun en tiempo de ejecución
+    """
+    Entry point para MLRun. Recibe el contexto del job, llama a train() y registra
+    parámetros, métricas y el artefacto del modelo en el tracking server de MLRun.
+    """
+    p = context.parameters
+    data_path   = p.get("data_path",   DEFAULT_DATA_PATH)
+    model_path  = p.get("model_path",  DEFAULT_MODEL_PATH)
+    random_state = int(p.get("random_state", DEFAULT_RANDOM_STATE))
+    n_iter       = int(p.get("n_iter",       DEFAULT_N_ITER))
+    cv_folds     = int(p.get("cv_folds",     DEFAULT_CV_FOLDS))
+
+    metrics = train(
+        data_path=data_path,
+        model_path=model_path,
+        random_state=random_state,
+        n_iter=n_iter,
+        cv_folds=cv_folds,
+    )
+
+    # Parámetros de configuración del experimento
+    context.log_results({
+        "random_state": random_state,
+        "n_iter":        n_iter,
+        "cv_folds":      cv_folds,
+    })
+
+    # Métricas de evaluación en test
+    context.log_results(metrics)
+
+    # Artefacto: pipeline completo (preprocesador + XGBoost)
+    with open(model_path, "rb") as f:
+        model_bytes = f.read()
+    context.log_model(
+        "dira-pipeline",
+        body=model_bytes,
+        model_file="modelo_diabetes_DIRA.pkl",
+        framework="sklearn",
+        metrics=metrics,
+        labels={"dataset": "BRFSS2015", "target": "diabetes_binary"},
+    )
+
 
 ## Función main para ejecutar el módulo de entrenamiento. Se parsean los argumentos, se llama a la función de entrenamiento y se imprimen los resultados.
 if __name__ == "__main__":

@@ -1,0 +1,12 @@
+apiVersion: v2
+name: dira
+description: DIRA – Detección de Riesgo de Diabetes. Infraestructura base (PVCs y ConfigMap). El ciclo de vida del modelo lo gestiona MLRun.
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - mlops
+  - diabetes
+  - xgboost
+maintainers:
+  - name: DIRA Team

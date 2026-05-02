@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-pvc
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+spec:
+  accessModes:
+    - {{ .Values.storage.dataPvc.accessMode }}
+  resources:
+    requests:
+      storage: {{ .Values.storage.dataPvc.size }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: model-pvc
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+spec:
+  accessModes:
+    - {{ .Values.storage.modelPvc.accessMode }}
+  resources:
+    requests:
+      storage: {{ .Values.storage.modelPvc.size }}

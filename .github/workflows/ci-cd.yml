@@ -1,0 +1,132 @@
+name: DIRA CI/CD
+
+# Disparo: push a main o ejecución manual con opción de forzar entrenamiento
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_training:
+        description: 'Forzar lanzamiento del entrenamiento MLRun'
+        type: boolean
+        default: false
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────────────
+  # JOB 1 – Construir imágenes y subirlas a Docker Hub
+  # Corre en runner hospedado por GitHub (no necesita acceso al clúster)
+  # ────────────────────────────────────────────────────────────────────────────
+  build:
+    name: Build & Push Docker Hub
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login en Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Configurar Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build y push – dira-train
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/train/Dockerfile
+          push: true
+          # Etiqueta con SHA (inmutable) y latest (comodín para MLRun por defecto)
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/dira-train:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/dira-train:latest
+          # Reutilizar capas de la última imagen para acelerar builds
+          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/dira-train:latest
+          cache-to:   type=inline
+
+      - name: Build y push – dira-infer
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/infer/Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/dira-infer:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/dira-infer:latest
+          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/dira-infer:latest
+          cache-to:   type=inline
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # JOB 2 – Desplegar en k3s y opcionalmente lanzar entrenamiento MLRun
+  # Requiere un runner self-hosted instalado en la misma máquina que k3s
+  # ────────────────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to k3s
+    needs: build
+    runs-on: self-hosted
+
+    env:
+      TRAIN_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/dira-train:${{ github.sha }}
+      INFER_IMAGE:  ${{ secrets.DOCKERHUB_USERNAME }}/dira-infer:${{ github.sha }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Importar las imágenes recién subidas al containerd de k3s
+      # (k3s no comparte el daemon Docker del host)
+      - name: Importar imágenes en k3s
+        run: |
+          docker pull ${{ env.TRAIN_IMAGE }}
+          docker pull ${{ env.INFER_IMAGE }}
+          docker save ${{ env.TRAIN_IMAGE }} | sudo k3s ctr images import -
+          docker save ${{ env.INFER_IMAGE }}  | sudo k3s ctr images import -
+
+      # Desplegar o actualizar la infraestructura DIRA (ConfigMap + PVCs)
+      - name: Helm upgrade – infraestructura DIRA
+        run: |
+          helm upgrade --install dira helm/dira \
+            --namespace dira \
+            --create-namespace \
+            --wait
+
+      # Detectar si cambiaron ficheros que afectan al modelo
+      - name: Detectar cambios en código del modelo
+        id: model_changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            model:
+              - 'src/train.py'
+              - 'src/features.py'
+              - 'src/data_ingestion.py'
+              - 'requirements_train.txt'
+
+      # Instalar el SDK de MLRun en el runner self-hosted para poder orquestar el Job
+      - name: Instalar SDK MLRun
+        if: steps.model_changes.outputs.model == 'true' || github.event.inputs.run_training == 'true'
+        run: pip install --quiet "mlrun==1.10.0"
+
+      # Lanzar ciclo de vida MLRun solo si cambió código del modelo o se forzó manualmente
+      - name: Lanzar entrenamiento y serving – MLRun
+        if: steps.model_changes.outputs.model == 'true' || github.event.inputs.run_training == 'true'
+        env:
+          MLRUN_DBPATH: ${{ secrets.MLRUN_DBPATH }}
+          TRAIN_IMAGE:  ${{ env.TRAIN_IMAGE }}
+          INFER_IMAGE:  ${{ env.INFER_IMAGE }}
+        run: python src/mlrun_project.py
+
+      # Verificar que el endpoint de inferencia responde después del despliegue
+      - name: Health check API de inferencia
+        if: steps.model_changes.outputs.model == 'true' || github.event.inputs.run_training == 'true'
+        run: |
+          NODE=$(kubectl get nodes \
+            -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+          PORT=$(kubectl get svc -n nuclio \
+            -l nuclio.io/function-name=dira-infer \
+            -o jsonpath='{.items[0].spec.ports[0].nodePort}')
+          curl --fail --retry 6 --retry-delay 5 \
+            "http://${NODE}:${PORT}/v2/health/ready"
