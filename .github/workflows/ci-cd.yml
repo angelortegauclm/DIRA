@@ -90,8 +90,7 @@ jobs:
         run: |
           helm upgrade --install dira helm/dira \
             --namespace dira \
-            --create-namespace \
-            --wait
+            --create-namespace
 
       # Detectar si cambiaron ficheros que afectan al modelo
       - name: Detectar cambios en código del modelo
