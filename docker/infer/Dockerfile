@@ -14,7 +14,6 @@ COPY --from=builder /usr/local/lib/python3.11/site-packages \
                     /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
-COPY src/features.py  src/
 COPY src/infer.py     src/
 COPY src/main_api.py  src/
 COPY src/__init__.py  src/
