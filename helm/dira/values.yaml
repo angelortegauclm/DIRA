@@ -1,0 +1,21 @@
+# Configuración del modelo y preprocesamiento
+config:
+  dataDir: "/data"
+  dataFilename: "diabetes_binary_health_indicators_BRFSS2015.csv"
+  modelPath: "/model/modelo_diabetes_DIRA.pkl"
+  randomState: "42"
+  nIter: "25"
+  cvFolds: "5"
+  umbralBajo: "0.30"
+  umbralAlto: "0.70"
+  # URI del API de MLRun desplegado en el mismo clúster
+  mlrunDbPath: "http://mlrun-api.mlrun.svc.cluster.local:8080"
+
+# Tamaños de los volúmenes persistentes
+storage:
+  dataPvc:
+    size: 1Gi
+    accessMode: ReadWriteOnce
+  modelPvc:
+    size: 500Mi
+    accessMode: ReadWriteOnce

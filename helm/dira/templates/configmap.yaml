@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dira-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/version: {{ .Chart.AppVersion }}
+    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+data:
+  DATA_DIR:        {{ .Values.config.dataDir | quote }}
+  DATA_FILENAME:   {{ .Values.config.dataFilename | quote }}
+  MODEL_PATH:      {{ .Values.config.modelPath | quote }}
+  RANDOM_STATE:    {{ .Values.config.randomState | quote }}
+  N_ITER:          {{ .Values.config.nIter | quote }}
+  CV_FOLDS:        {{ .Values.config.cvFolds | quote }}
+  UMBRAL_BAJO:     {{ .Values.config.umbralBajo | quote }}
+  UMBRAL_ALTO:     {{ .Values.config.umbralAlto | quote }}
+  MLRUN_DBPATH:    {{ .Values.config.mlrunDbPath | quote }}

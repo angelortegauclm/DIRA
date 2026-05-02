@@ -1,0 +1,7 @@
+mlrun==1.10.0
+xgboost-cpu==3.2.0
+scikit-learn
+pandas
+numpy
+joblib
+scipy
