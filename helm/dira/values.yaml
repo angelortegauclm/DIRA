@@ -11,6 +11,13 @@ config:
   # URI del API de MLRun desplegado en el mismo clúster
   mlrunDbPath: "http://mlrun-api.mlrun.svc.cluster.local:8080"
 
+# Frontend web
+frontend:
+  image: dira-front:latest
+  imagePullPolicy: IfNotPresent
+  apiUrl: "http://192.168.1.131:31995"
+  nodePort: 30100
+
 # Tamaños de los volúmenes persistentes
 storage:
   dataPvc:

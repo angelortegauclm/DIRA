@@ -58,8 +58,8 @@ train_fn = project.set_function(
     handler="train.mlrun_train",
 )
 
-# Python path: /app/src está en WORKDIR del contenedor, src/ contiene los módulos
-train_fn.spec.pythonpath = "/app/src"
+# Python path: WORKDIR del contenedor es /app/src/backend, ahí residen los módulos
+train_fn.spec.pythonpath = "/app/src/backend"
 train_fn.spec.image_pull_policy = "IfNotPresent"
 
 # Recursos del Job

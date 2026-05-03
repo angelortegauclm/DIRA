@@ -3,6 +3,7 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import numpy as np
@@ -16,6 +17,12 @@ app = FastAPI(
     version="1.0.0"
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
 
 # Cargamos el predictor en el contexto global (se ejecuta al arrancar el servidor)
 predictor = DIRAPredictor(model_path=os.getenv("MODEL_PATH", "./model/modelo_diabetes_DIRA.pkl"))

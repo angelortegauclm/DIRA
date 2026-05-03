@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DIRA – Riesgo de Diabetes</title>
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <h1>DIRA</h1>
+    <p>Sistema de Detección Inteligente de Riesgo de Diabetes</p>
+  </header>
+
+  <form id="form">
+
+    <div class="card">
+      <h2>Factores cardiovasculares</h2>
+      <div class="check-grid">
+        <div class="check-item"><input type="checkbox" id="HighBP"><label for="HighBP">Presión arterial alta</label></div>
+        <div class="check-item"><input type="checkbox" id="HighChol"><label for="HighChol">Colesterol alto</label></div>
+        <div class="check-item"><input type="checkbox" id="CholCheck" checked><label for="CholCheck">Control colesterol (últimos 5 años)</label></div>
+        <div class="check-item"><input type="checkbox" id="Stroke"><label for="Stroke">Historial de ictus</label></div>
+        <div class="check-item"><input type="checkbox" id="HeartDiseaseorAttack"><label for="HeartDiseaseorAttack">Enfermedad cardíaca / infarto</label></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Hábitos y estilo de vida</h2>
+      <div class="check-grid">
+        <div class="check-item"><input type="checkbox" id="Smoker"><label for="Smoker">Fumador (≥ 100 cigarrillos vida)</label></div>
+        <div class="check-item"><input type="checkbox" id="PhysActivity" checked><label for="PhysActivity">Actividad física regular</label></div>
+        <div class="check-item"><input type="checkbox" id="Fruits" checked><label for="Fruits">Consume fruta diariamente</label></div>
+        <div class="check-item"><input type="checkbox" id="Veggies" checked><label for="Veggies">Consume verdura diariamente</label></div>
+        <div class="check-item"><input type="checkbox" id="HvyAlcoholConsump"><label for="HvyAlcoholConsump">Consumo elevado de alcohol</label></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Acceso sanitario y movilidad</h2>
+      <div class="check-grid">
+        <div class="check-item"><input type="checkbox" id="AnyHealthcare" checked><label for="AnyHealthcare">Tiene cobertura sanitaria</label></div>
+        <div class="check-item"><input type="checkbox" id="NoDocbcCost"><label for="NoDocbcCost">No visitó médico por coste</label></div>
+        <div class="check-item"><input type="checkbox" id="DiffWalk"><label for="DiffWalk">Dificultad para caminar</label></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Indicadores clínicos</h2>
+      <div class="field-grid">
+        <div class="field">
+          <label for="BMI">IMC (Índice de Masa Corporal)</label>
+          <input type="number" id="BMI" min="10" max="98" step="0.1" value="25.0">
+        </div>
+        <div class="field">
+          <label for="GenHlth">Salud general percibida</label>
+          <select id="GenHlth">
+            <option value="1">1 – Excelente</option>
+            <option value="2">2 – Muy buena</option>
+            <option value="3" selected>3 – Buena</option>
+            <option value="4">4 – Regular</option>
+            <option value="5">5 – Mala</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="MentHlth">Días salud mental afectada (últimos 30)</label>
+          <input type="number" id="MentHlth" min="0" max="30" value="0">
+        </div>
+        <div class="field">
+          <label for="PhysHlth">Días salud física afectada (últimos 30)</label>
+          <input type="number" id="PhysHlth" min="0" max="30" value="0">
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Datos demográficos</h2>
+      <div class="field-grid">
+        <div class="field">
+          <label for="Sex">Sexo</label>
+          <select id="Sex">
+            <option value="0">Mujer</option>
+            <option value="1">Hombre</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="Age">Rango de edad</label>
+          <select id="Age">
+            <option value="1">1 – 18-24 años</option>
+            <option value="2">2 – 25-29 años</option>
+            <option value="3">3 – 30-34 años</option>
+            <option value="4">4 – 35-39 años</option>
+            <option value="5">5 – 40-44 años</option>
+            <option value="6">6 – 45-49 años</option>
+            <option value="7" selected>7 – 50-54 años</option>
+            <option value="8">8 – 55-59 años</option>
+            <option value="9">9 – 60-64 años</option>
+            <option value="10">10 – 65-69 años</option>
+            <option value="11">11 – 70-74 años</option>
+            <option value="12">12 – 75-79 años</option>
+            <option value="13">13 – 80+ años</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="Education">Nivel educativo</label>
+          <select id="Education">
+            <option value="1">1 – Sin estudios</option>
+            <option value="2">2 – Primaria</option>
+            <option value="3">3 – Secundaria incompleta</option>
+            <option value="4" selected>4 – Bachillerato / FP</option>
+            <option value="5">5 – Universidad incompleta</option>
+            <option value="6">6 – Universitario</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="Income">Nivel de ingresos anuales</label>
+          <select id="Income">
+            <option value="1">1 – &lt; $10.000</option>
+            <option value="2">2 – $10.000 – $15.000</option>
+            <option value="3">3 – $15.000 – $20.000</option>
+            <option value="4">4 – $20.000 – $25.000</option>
+            <option value="5" selected>5 – $25.000 – $35.000</option>
+            <option value="6">6 – $35.000 – $50.000</option>
+            <option value="7">7 – $50.000 – $75.000</option>
+            <option value="8">8 – &gt; $75.000</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <button type="submit" class="submit-btn" id="submitBtn">Evaluar Riesgo de Diabetes</button>
+  </form>
+
+  <div id="error" class="error"></div>
+
+  <div id="result" class="result">
+    <div class="prob"   id="res-prob"></div>
+    <div class="nivel"  id="res-nivel"></div>
+    <div class="accion" id="res-accion"></div>
+  </div>
+
+</div>
+
+<script src="js/config.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

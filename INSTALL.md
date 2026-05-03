@@ -102,10 +102,12 @@ helm version
 # Desde la raíz del repositorio
 docker build -t dira-train:latest -f docker/train/Dockerfile .
 docker build -t dira-infer:latest  -f docker/infer/Dockerfile .
+docker build -t dira-front:latest  -f docker/front/Dockerfile .
 
 # Importar en el containerd de k3s (necesario porque k3s no usa el daemon Docker)
 docker save dira-train:latest | sudo k3s ctr images import -
 docker save dira-infer:latest  | sudo k3s ctr images import -
+docker save dira-front:latest  | sudo k3s ctr images import -
 
 # Verificar que están disponibles para k3s
 sudo k3s ctr images ls | grep dira
@@ -114,6 +116,11 @@ sudo k3s ctr images ls | grep dira
 > **Nota sobre paquetes Python:** el Dockerfile de entrenamiento instala `xgboost-cpu`
 > (variante sin CUDA), no `xgboost`. Si cambias la imagen base a una con GPU deberás
 > ajustar también `requirements_train.txt`.
+>
+> **Nota sobre versiones Python:** los Dockerfiles de entrenamiento e inferencia usan
+> `python:3.11-slim`. Es imprescindible que ambos usen la misma versión principal de
+> Python para que el modelo serializado con `cloudpickle` sea deserializable en el
+> contenedor de inferencia.
 
 ---
 
@@ -153,18 +160,26 @@ echo "MLRun API: $MLRUN_DBPATH"
 
 ## 5. Desplegar la infraestructura DIRA con Helm
 
-El chart DIRA crea el namespace, el ConfigMap y los dos PVCs (`data-pvc` y `model-pvc`).
+El chart DIRA crea el namespace, el ConfigMap, los dos PVCs (`data-pvc` y `model-pvc`) y el frontend web.
 
 ```bash
-# Crear namespace
-kubectl create namespace dira
+# Obtener IP y NodePort del servicio de inferencia (si ya está desplegado)
+NODE_IP=$(kubectl get nodes \
+  -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+INFER_PORT=$(kubectl get svc dira-infer -n mlrun \
+  -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "")
 
-# Instalar el chart
-helm install dira helm/dira --namespace dira
+# Instalar el chart (con URL del backend si ya se conoce)
+helm install dira helm/dira --namespace dira --create-namespace \
+  ${INFER_PORT:+--set frontend.apiUrl=http://${NODE_IP}:${INFER_PORT}}
 
 # Verificar
-kubectl get configmap,pvc -n dira
+kubectl get configmap,pvc,pods -n dira
 ```
+
+> Si el servicio de inferencia aún no existe en el momento de la instalación inicial,
+> omite el flag `--set frontend.apiUrl`. El CI/CD lo actualizará automáticamente en
+> cada `helm upgrade` una vez que el servicio esté desplegado.
 
 Para cambiar cualquier parámetro sin modificar el código:
 
@@ -240,7 +255,7 @@ conda activate dira
 echo $MLRUN_DBPATH
 
 # Lanzar entrenamiento + registro en MLRun
-python src/mlrun_project.py
+python src/backend/mlrun_project.py
 ```
 
 El script:
@@ -266,9 +281,10 @@ Salida esperada al finalizar:
     ...
 ```
 
-> **Nota sobre pythonpath:** el Job configura `spec.pythonpath = "/app/src"` para que
-> los imports relativos dentro del contenedor (`from data_ingestion import ...`) se
-> resuelvan correctamente. Sin esta configuración el Job falla con `ModuleNotFoundError`.
+> **Nota sobre pythonpath:** el Job configura `spec.pythonpath = "/app/src/backend"` para
+> que los imports dentro del contenedor (`from data_ingestion import ...`) se resuelvan
+> correctamente. El `WORKDIR` del contenedor es también `/app/src/backend`. Sin esta
+> configuración el Job falla con `ModuleNotFoundError`.
 
 ---
 
@@ -318,28 +334,51 @@ curl -X POST http://<node-ip>:<port>/v2/models/modelo_diabetes_DIRA/infer \
 
 ---
 
-## 11. Reentrenar el modelo
+## 11. Acceder a la interfaz web
+
+Una vez que el chart DIRA está instalado y el contenedor del frontend está Running:
+
+```bash
+# Verificar que el pod del frontend está activo
+kubectl get pods -n dira -l app=dira-front
+
+# Obtener la IP del nodo
+kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}'
+```
+
+La interfaz web está disponible en `http://<node-ip>:30100`.
+
+> Si el frontend muestra el formulario pero la respuesta de la API es un error de red,
+> verificar que `frontend.apiUrl` apunta al NodePort correcto del servicio `dira-infer`:
+> ```bash
+> helm upgrade dira helm/dira --namespace dira \
+>   --set frontend.apiUrl=http://<node-ip>:<infer-port>
+> ```
+
+---
+
+## 12. Reentrenar el modelo
 
 Para lanzar un nuevo ciclo de entrenamiento con parámetros distintos:
 
 ```bash
 # Opción A: sobreescribir variables de entorno antes de ejecutar
-N_ITER=50 CV_FOLDS=10 python src/mlrun_project.py
+N_ITER=50 CV_FOLDS=10 python src/backend/mlrun_project.py
 
 # Opción B: actualizar el ConfigMap vía Helm y relanzar
 helm upgrade dira helm/dira --namespace dira --set config.nIter=50
-python src/mlrun_project.py
+python src/backend/mlrun_project.py
 ```
 
 Cada ejecución genera un nuevo Run en MLRun con su propio UID, métricas y artefacto versionado. El historial completo queda disponible en la UI.
 
 ---
 
-## 12. Configurar el pipeline CI/CD (GitHub Actions)
+## 13. Configurar el pipeline CI/CD (GitHub Actions)
 
 El pipeline automatiza: build de imágenes → push a Docker Hub → despliegue en k3s → entrenamiento MLRun si el código del modelo cambia.
 
-### 12.1 Instalar el runner self-hosted en la máquina con k3s
+### 13.1 Instalar el runner self-hosted en la máquina con k3s
 
 El job `deploy` del workflow necesita acceso directo al clúster, por lo que el runner debe correr en la misma máquina que k3s.
 
@@ -361,7 +400,7 @@ sudo ./svc.sh start
 
 Verificar que el runner aparece como **Online** en GitHub Settings → Actions → Runners.
 
-### 12.2 Crear los secretos en GitHub
+### 13.2 Crear los secretos en GitHub
 
 En **Settings → Secrets and variables → Actions → New repository secret**:
 
@@ -380,26 +419,29 @@ En **Settings → Secrets and variables → Actions → New repository secret**:
 > echo "http://${IP}:${PORT}"
 > ```
 
-### 12.3 Comportamiento del pipeline
+### 13.3 Comportamiento del pipeline
 
 ```
 push a main
     │
     ├─► Job build (GitHub runner)
     │       ├─ docker build dira-train  → push <user>/dira-train:<sha> + :latest
-    │       └─ docker build dira-infer  → push <user>/dira-infer:<sha> + :latest
+    │       ├─ docker build dira-infer  → push <user>/dira-infer:<sha> + :latest
+    │       └─ docker build dira-front  → push <user>/dira-front:<sha> + :latest
     │
     └─► Job deploy (self-hosted runner en k3s)  [necesita build]
-            ├─ docker pull + k3s ctr images import  (ambas imágenes)
-            ├─ helm upgrade --install dira           (ConfigMap + PVCs)
-            ├─ [si src/train.py|features.py|data_ingestion.py|requirements_train.txt cambió
+            ├─ docker pull + k3s ctr images import  (tres imágenes)
+            ├─ helm upgrade --install dira           (ConfigMap + PVCs + frontend)
+            │     └─ calcula NodePort infer y pasa --set frontend.apiUrl=...
+            ├─ [si src/backend/train.py|features.py|data_ingestion.py|requirements_train.txt cambió
             │   O se activó manualmente]
-            │       ├─ pip install mlrun==1.10.0     (SDK en el runner)
-            │       └─ python src/mlrun_project.py  (lanza Job de entrenamiento + serving)
+            │       ├─ conda activate dira + pip install mlrun==1.10.0
+            │       ├─ python src/backend/mlrun_project.py  (Job entrenamiento + serving)
+            │       └─ kubectl rollout restart deployment/dira-infer  (auto-restart)
             └─ [tras entrenamiento] curl /v2/health/ready  (health check)
 ```
 
-### 12.4 Forzar un entrenamiento sin cambiar código
+### 13.4 Forzar un entrenamiento sin cambiar código
 
 ```
 GitHub → Actions → DIRA CI/CD → Run workflow → ✓ Forzar lanzamiento del entrenamiento MLRun → Run
@@ -407,13 +449,28 @@ GitHub → Actions → DIRA CI/CD → Run workflow → ✓ Forzar lanzamiento de
 
 ---
 
-## 13. Resolución de problemas conocidos
+## 14. Resolución de problemas conocidos
 
 ### `ModuleNotFoundError: No module named 'data_ingestion'` en el Job de MLRun
 
-El Job corre con `WORKDIR=/app` pero los módulos están en `/app/src`. La configuración
-`train_fn.spec.pythonpath = "/app/src"` en `mlrun_project.py` resuelve esto. Verificar
-que esa línea está presente antes de relanzar.
+El Job usa `WORKDIR=/app/src/backend`. La configuración
+`train_fn.spec.pythonpath = "/app/src/backend"` en `mlrun_project.py` resuelve esto.
+Verificar que esa línea está presente y que los ficheros del backend están en
+`src/backend/` (no en `src/` directamente).
+
+### `unknown opcode 0` al cargar el modelo en el contenedor de inferencia
+
+`cloudpickle` serializa bytecode Python. Si el modelo fue entrenado con Python 3.11 y el
+contenedor de inferencia usa Python 3.12 (u otra versión principal distinta), la
+deserialización falla con este error.
+
+Solución: asegurarse de que ambos Dockerfiles (`docker/train/Dockerfile` y
+`docker/infer/Dockerfile`) usan la misma versión base:
+```dockerfile
+FROM mirror.gcr.io/library/python:3.11-slim
+```
+Después, regenerar ambas imágenes, reimportarlas en k3s y relanzar el entrenamiento para
+que el nuevo artefacto `.pkl` sea compatible.
 
 ### `TypeError: XGBClassifier.__init__() got an unexpected keyword argument 'use_label_encoder'`
 
@@ -489,25 +546,37 @@ sudo k3s-uninstall.sh
 DIRA/
 ├── .github/
 │   └── workflows/
-│       └── ci-cd.yml           # pipeline CI/CD: build → Docker Hub → k3s → MLRun
+│       └── ci-cd.yml              # CI/CD: build → Docker Hub → k3s → MLRun
 ├── docker/
-│   ├── train/Dockerfile        # imagen dira-train (Python 3.11, xgboost-cpu)
-│   └── infer/Dockerfile        # imagen dira-infer (Python 3.12, FastAPI)
+│   ├── train/Dockerfile           # imagen dira-train (Python 3.11, xgboost-cpu)
+│   ├── infer/Dockerfile           # imagen dira-infer (Python 3.11, FastAPI)
+│   └── front/
+│       ├── Dockerfile             # imagen dira-front (nginx)
+│       └── 40-envsubst.sh         # inyecta API_URL en config.js al arrancar
 ├── helm/
 │   └── dira/
 │       ├── Chart.yaml
 │       ├── values.yaml
 │       └── templates/
-│           ├── configmap.yaml  # ConfigMap con variables de entorno
-│           └── pvc.yaml        # data-pvc y model-pvc
+│           ├── configmap.yaml     # ConfigMap con variables de entrenamiento
+│           ├── pvc.yaml           # data-pvc y model-pvc
+│           ├── front-deployment.yaml
+│           └── front-service.yaml
 ├── src/
-│   ├── data_ingestion.py
-│   ├── features.py
-│   ├── train.py                # + handler mlrun_train() para MLRun
-│   ├── mlrun_project.py        # orquestación del ciclo de vida
-│   ├── infer.py
-│   └── main_api.py
-├── requirements_train.txt      # mlrun==1.10.0, xgboost-cpu==3.2.0
-├── requirements_infer.txt
-└── INSTALL.md                  # este archivo
+│   ├── backend/
+│   │   ├── data_ingestion.py
+│   │   ├── features.py
+│   │   ├── train.py               # + handler mlrun_train() para MLRun
+│   │   ├── mlrun_project.py       # orquestación del ciclo de vida
+│   │   ├── infer.py               # DIRAPredictor (cloudpickle)
+│   │   └── main_api.py            # FastAPI, protocolo Open Inference V2
+│   └── frontend/
+│       ├── index.html
+│       ├── css/styles.css
+│       └── js/
+│           ├── config.js          # const API_URL = '${API_URL}' (sustituido por envsubst)
+│           └── app.js
+├── requirements_train.txt         # mlrun==1.10.0, xgboost-cpu, cloudpickle
+├── requirements_infer.txt         # fastapi, uvicorn, cloudpickle
+└── INSTALL.md                     # este archivo
 ```

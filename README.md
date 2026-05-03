@@ -163,6 +163,65 @@ Estas métricas permiten evaluar la capacidad del modelo para identificar correc
 
 ---
 
+## Interfaz web
+
+DIRA incluye una interfaz web desplegada como contenedor nginx que permite introducir los parámetros del paciente y obtener el resultado de forma visual:
+
+- Formulario con los 21 factores clínicos, de estilo de vida y demográficos
+- Resultado con código de color: verde (riesgo < 30%), naranja (30–70%), rojo (> 70%)
+- Desplegada como contenedor en k3s, accesible en `http://<node-ip>:30100`
+
+---
+
+## Infraestructura MLOps
+
+El sistema completo se despliega en un clúster Kubernetes ligero mediante:
+
+| Componente | Rol |
+|---|---|
+| **k3s** | Clúster Kubernetes local |
+| **Helm** | Gestión del despliegue (ConfigMaps, PVCs, frontend) |
+| **MLRun CE** | Ciclo de vida del modelo: Jobs, Model Registry, Serving |
+| **Nuclio** | Runtime serverless para la función de inferencia |
+| **FastAPI** | API de inferencia (protocolo Open Inference V2) |
+| **nginx** | Servidor del frontend web |
+| **Docker Hub** | Registro de imágenes |
+| **GitHub Actions** | CI/CD: build → push → despliegue → entrenamiento |
+
+El pipeline CI/CD detecta cambios en el código del modelo y lanza automáticamente un nuevo ciclo de entrenamiento y despliegue sin intervención manual.
+
+---
+
+## Estructura del proyecto
+
+```
+DIRA/
+├── .github/workflows/ci-cd.yml   # CI/CD: build → Docker Hub → k3s → MLRun
+├── docker/
+│   ├── train/Dockerfile           # imagen dira-train (Python 3.11)
+│   ├── infer/Dockerfile           # imagen dira-infer (Python 3.11, FastAPI)
+│   └── front/Dockerfile           # imagen dira-front (nginx)
+├── helm/dira/                     # chart Helm: ConfigMap, PVCs, frontend
+├── src/
+│   ├── backend/
+│   │   ├── data_ingestion.py
+│   │   ├── features.py
+│   │   ├── train.py
+│   │   ├── mlrun_project.py
+│   │   ├── infer.py
+│   │   └── main_api.py
+│   └── frontend/
+│       ├── index.html
+│       ├── css/styles.css
+│       └── js/
+│           ├── config.js          # API_URL inyectada vía envsubst al arrancar
+│           └── app.js
+├── requirements_train.txt
+└── requirements_infer.txt
+```
+
+---
+
 ## Tecnologías utilizadas
 
 El proyecto ha sido desarrollado en **Python** utilizando las siguientes librerías:
@@ -180,4 +239,4 @@ El proyecto ha sido desarrollado en **Python** utilizando las siguientes librer�
 - catboost  
 - shap  
 - dython  
-- joblib  
+- cloudpickle  
