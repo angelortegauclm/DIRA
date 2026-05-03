@@ -59,6 +59,18 @@ jobs:
           cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/dira-infer:latest
           cache-to:   type=inline
 
+      - name: Build y push – dira-front
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/front/Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/dira-front:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/dira-front:latest
+          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/dira-front:latest
+          cache-to:   type=inline
+
   # ────────────────────────────────────────────────────────────────────────────
   # JOB 2 – Desplegar en k3s y opcionalmente lanzar entrenamiento MLRun
   # Requiere un runner self-hosted instalado en la misma máquina que k3s
@@ -71,6 +83,7 @@ jobs:
     env:
       TRAIN_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/dira-train:${{ github.sha }}
       INFER_IMAGE:  ${{ secrets.DOCKERHUB_USERNAME }}/dira-infer:${{ github.sha }}
+      FRONT_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/dira-front:${{ github.sha }}
 
     steps:
       - name: Checkout
@@ -82,8 +95,10 @@ jobs:
         run: |
           docker pull ${{ env.TRAIN_IMAGE }}
           docker pull ${{ env.INFER_IMAGE }}
+          docker pull ${{ env.FRONT_IMAGE }}
           docker save ${{ env.TRAIN_IMAGE }} | sudo k3s ctr images import -
           docker save ${{ env.INFER_IMAGE }}  | sudo k3s ctr images import -
+          docker save ${{ env.FRONT_IMAGE }} | sudo k3s ctr images import -
 
       # Desplegar o actualizar la infraestructura DIRA (ConfigMap + PVCs + frontend)
       - name: Helm upgrade – infraestructura DIRA
@@ -99,7 +114,9 @@ jobs:
           helm upgrade --install dira helm/dira \
             --namespace dira \
             --create-namespace \
+            --set frontend.image=${{ env.FRONT_IMAGE }} \
             $INFER_ARGS
+          kubectl rollout restart deployment/dira-front -n dira
 
       # Detectar si cambiaron ficheros que afectan al modelo
       - name: Detectar cambios en código del modelo
