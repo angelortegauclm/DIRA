@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dira-front
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: dira-front
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dira-front
+  template:
+    metadata:
+      labels:
+        app: dira-front
+    spec:
+      containers:
+        - name: dira-front
+          image: {{ .Values.frontend.image }}
+          imagePullPolicy: {{ .Values.frontend.imagePullPolicy }}
+          ports:
+            - containerPort: 80
+          env:
+            - name: API_URL
+              value: {{ .Values.frontend.apiUrl | quote }}

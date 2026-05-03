@@ -85,12 +85,21 @@ jobs:
           docker save ${{ env.TRAIN_IMAGE }} | sudo k3s ctr images import -
           docker save ${{ env.INFER_IMAGE }}  | sudo k3s ctr images import -
 
-      # Desplegar o actualizar la infraestructura DIRA (ConfigMap + PVCs)
+      # Desplegar o actualizar la infraestructura DIRA (ConfigMap + PVCs + frontend)
       - name: Helm upgrade – infraestructura DIRA
         run: |
+          NODE_IP=$(kubectl get nodes \
+            -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+          INFER_PORT=$(kubectl get svc dira-infer -n mlrun \
+            -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "")
+          INFER_ARGS=""
+          if [ -n "$INFER_PORT" ]; then
+            INFER_ARGS="--set frontend.apiUrl=http://${NODE_IP}:${INFER_PORT}"
+          fi
           helm upgrade --install dira helm/dira \
             --namespace dira \
-            --create-namespace
+            --create-namespace \
+            $INFER_ARGS
 
       # Detectar si cambiaron ficheros que afectan al modelo
       - name: Detectar cambios en código del modelo
@@ -99,9 +108,9 @@ jobs:
         with:
           filters: |
             model:
-              - 'src/train.py'
-              - 'src/features.py'
-              - 'src/data_ingestion.py'
+              - 'src/backend/train.py'
+              - 'src/backend/features.py'
+              - 'src/backend/data_ingestion.py'
               - 'requirements_train.txt'
 
       # Instalar el SDK de MLRun en el entorno conda 'dira' (Python 3.9)
@@ -123,7 +132,7 @@ jobs:
         run: |
           source /home/angel/.miniconda3/etc/profile.d/conda.sh
           conda activate dira
-          python src/mlrun_project.py
+          python src/backend/mlrun_project.py
 
       # Verificar que el endpoint de inferencia responde después del despliegue
       - name: Health check API de inferencia
