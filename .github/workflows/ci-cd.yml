@@ -118,6 +118,22 @@ jobs:
           docker save ${{ env.INFER_IMAGE }}  | sudo k3s ctr images import -
           docker save ${{ env.FRONT_IMAGE }} | sudo k3s ctr images import -
 
+      # El CronJob de drift vive en el namespace mlrun (para acceder al model-pvc),
+      # pero pertenece al release Helm 'dira'. Si fue creado previamente con
+      # kubectl apply (sin metadatos de Helm), el upgrade falla con "cannot be
+      # imported into the current release". Este paso lo adopta idempotentemente.
+      - name: Adoptar CronJob de drift en Helm (si existe sin metadatos)
+        run: |
+          if kubectl get cronjob dira-drift-check -n mlrun &>/dev/null; then
+            kubectl annotate cronjob dira-drift-check \
+              meta.helm.sh/release-name=dira \
+              meta.helm.sh/release-namespace=dira \
+              -n mlrun --overwrite
+            kubectl label cronjob dira-drift-check \
+              app.kubernetes.io/managed-by=Helm \
+              -n mlrun --overwrite
+          fi
+
       # Actualizar ConfigMap, PVCs y Deployment del frontend.
       # Se pasa la URL del endpoint de inferencia dinámicamente:
       # si el servicio ya existe se lee su NodePort; si no, se omite el parámetro
