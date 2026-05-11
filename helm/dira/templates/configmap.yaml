@@ -1,3 +1,13 @@
+# ── ConfigMap dira-config ─────────────────────────────────────────────────────
+#
+# Centraliza todas las variables de entorno compartidas entre los pods de
+# entrenamiento (dira-train) e inferencia (dira-infer).
+#
+# Los pods lo consumen con 'envFrom.configMapRef' en sus specs de Kubernetes,
+# lo que evita repetir las mismas variables en cada definición de pod.
+#
+# Los valores provienen de helm/dira/values.yaml → sección 'config'.
+# Para cambiar un parámetro basta con hacer 'helm upgrade' sin tocar la imagen.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -8,12 +18,28 @@ metadata:
     app.kubernetes.io/version: {{ .Chart.AppVersion }}
     helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 data:
+  # ── Rutas del dataset y el modelo ────────────────────────────────────────
+  # data_ingestion.py y train.py combinan DATA_DIR + DATA_FILENAME para
+  # construir la ruta completa al CSV. Separar directorio y nombre permite
+  # montar el PVC en cualquier ruta sin cambiar el código.
   DATA_DIR:        {{ .Values.config.dataDir | quote }}
   DATA_FILENAME:   {{ .Values.config.dataFilename | quote }}
+  # Ruta completa donde train.py guarda el pipeline serializado (.pkl).
+  # infer.py lo carga desde esta misma ruta al arrancar.
   MODEL_PATH:      {{ .Values.config.modelPath | quote }}
-  RANDOM_STATE:    {{ .Values.config.randomState | quote }}
-  N_ITER:          {{ .Values.config.nIter | quote }}
-  CV_FOLDS:        {{ .Values.config.cvFolds | quote }}
+
+  # ── Hiperparámetros del entrenamiento ─────────────────────────────────────
+  RANDOM_STATE:    {{ .Values.config.randomState | quote }}   # Semilla para reproducibilidad
+  N_ITER:          {{ .Values.config.nIter | quote }}         # Iteraciones de RandomizedSearchCV
+  CV_FOLDS:        {{ .Values.config.cvFolds | quote }}       # Folds de validación cruzada
+
+  # ── Umbrales de clasificación de riesgo ──────────────────────────────────
+  # infer.py usa estos umbrales para convertir la probabilidad predicha
+  # en nivel de riesgo: < UMBRAL_BAJO → Verde, > UMBRAL_ALTO → Rojo
   UMBRAL_BAJO:     {{ .Values.config.umbralBajo | quote }}
   UMBRAL_ALTO:     {{ .Values.config.umbralAlto | quote }}
+
+  # ── Conexión a MLRun ──────────────────────────────────────────────────────
+  # URL interna del API de MLRun (solo accesible desde dentro del clúster).
+  # mlrun_project.py la usa para registrar experimentos y artefactos.
   MLRUN_DBPATH:    {{ .Values.config.mlrunDbPath | quote }}

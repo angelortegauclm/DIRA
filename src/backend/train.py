@@ -216,15 +216,24 @@ def train (data_path: str, model_path: str, random_state: int = 42, n_iter: int 
     with open(model_path, "wb") as f:
         cloudpickle.dump(pipeline_final_DIRA, f)
 
-    print(f"[train] Pipeline guardado como '{model_path}'")    
+    print(f"[train] Pipeline guardado como '{model_path}'")
+
+    # Guardar muestra de referencia para drift detection (accesible desde model-pvc)
+    ref_path = os.path.join(os.path.dirname(model_path), "reference_sample.csv")
+    X_train.sample(n=min(5000, len(X_train)), random_state=random_state).to_csv(ref_path, index=False)
+    print(f"[train] Muestra de referencia guardada en '{ref_path}'")
 
     return metrics
 
 def mlrun_train(context):
-    # context es mlrun.MLClientCtx, inyectado por MLRun en tiempo de ejecución
-    """
-    Entry point para MLRun. Recibe el contexto del job, llama a train() y registra
-    parámetros, métricas y el artefacto del modelo en el tracking server de MLRun.
+    """Entry point para MLRun.
+
+    MLRun inyecta 'context' (MLClientCtx) al lanzar el Job en Kubernetes.
+    Esta función extrae los parámetros del contexto, llama a train() y
+    registra en el tracking server de MLRun:
+      - Parámetros de configuración del experimento (random_state, n_iter...)
+      - Métricas de evaluación en test (AP, F1, recall, precision, matriz de confusión)
+      - El artefacto del modelo (.pkl) para versionado y reproducibilidad
     """
     p = context.parameters
     data_path   = p.get("data_path",   DEFAULT_DATA_PATH)

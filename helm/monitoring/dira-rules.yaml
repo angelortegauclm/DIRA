@@ -1,0 +1,170 @@
+# ── PrometheusRule – Alertas de DIRA ─────────────────────────────────────────
+#
+# Recurso CRD de Prometheus Operator que define las reglas de alerta del sistema.
+# El operador lee este recurso y las inyecta automáticamente en la configuración
+# de Prometheus sin necesidad de reiniciarlo.
+#
+# Aplicar con:
+#   kubectl apply -f helm/monitoring/dira-rules.yaml
+#
+# Las alertas se enrutan a través de Alertmanager → Telegram (ver values-prometheus.yaml)
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: dira-alerts
+  namespace: monitoring
+  labels:
+    # Estas etiquetas deben coincidir con ruleSelector del Prometheus Operator.
+    # Si no coinciden, el operador ignorará este recurso.
+    release: monitoring
+    app: kube-prometheus-stack
+spec:
+  groups:
+
+    # ── Grupo 1: Disponibilidad del servicio ─────────────────────────────────
+    # Alertas críticas que indican que el sistema no puede servir predicciones.
+    # Intervalo de 30s para detección rápida.
+    - name: dira.disponibilidad
+      interval: 30s
+      rules:
+
+        # Alerta si Prometheus no puede hacer scrape del pod de inferencia.
+        # up{job="dira-infer"} == 0 significa que el target está caído o inaccesible.
+        # 'for: 2m' da tiempo para que el pod arranque tras un reinicio normal.
+        - alert: DiraInferDown
+          expr: up{job="dira-infer"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "El endpoint de inferencia DIRA no responde"
+            description: "Prometheus no puede hacer scrape de dira-infer desde hace >2 min. El servicio no está disponible."
+
+        # Alerta si el modelo no está cargado en memoria.
+        # dira_model_loaded es un Gauge que main_api.py pone a 1 cuando el modelo
+        # está disponible y a 0 cuando falla la carga.
+        # Si está a 0 más de 2 minutos, ninguna petición de inferencia puede completarse.
+        - alert: DiraModelNotLoaded
+          expr: dira_model_loaded == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "El modelo DIRA no está cargado en memoria"
+            description: "El gauge dira_model_loaded lleva >2 min en 0. El pod arrancó pero no pudo cargar el fichero .pkl desde el model-pvc."
+
+    # ── Grupo 2: Calidad del servicio ────────────────────────────────────────
+    # Alertas que indican degradación del rendimiento sin interrupción total.
+    - name: dira.calidad
+      interval: 30s
+      rules:
+
+        # Alerta si más del 5% de las peticiones de inferencia devuelven error HTTP.
+        # NOTA: el label correcto es 'status' (no 'status_code') según lo que expone
+        # prometheus-fastapi-instrumentator v7. Valores: "2xx", "4xx", "5xx".
+        - alert: DiraInferHighErrorRate
+          expr: |
+            rate(http_requests_total{job="dira-infer", status=~"5.."}[5m])
+            /
+            rate(http_requests_total{job="dira-infer"}[5m])
+            > 0.05
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Tasa de errores HTTP alta en dira-infer ({{ $value | humanizePercentage }})"
+            description: "Más del 5% de las peticiones devuelven error 5xx en los últimos 5 minutos."
+
+        # Alerta si la latencia P95 supera 500ms.
+        # En condiciones normales la P95 es ~95ms. Un salto a 500ms indica
+        # sobrecarga del pod, problema con el modelo o contención de I/O en el PVC.
+        # 'for: 5m' evita falsas alarmas por picos puntuales de arranque.
+        - alert: DiraInferHighLatency
+          expr: |
+            histogram_quantile(0.95,
+              sum(rate(http_request_duration_seconds_bucket{job="dira-infer", handler="/infer"}[5m]))
+              by (le)
+            ) > 0.5
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Latencia P95 alta en dira-infer ({{ $value | humanizeDuration }})"
+            description: "El percentil 95 de latencia supera 500ms. Valor actual: {{ $value | humanizeDuration }}."
+
+    # ── Grupo 3: Recursos del pod ────────────────────────────────────────────
+    # Alertas de uso de CPU y memoria en valores absolutos.
+    # Se usa memoria absoluta (no porcentaje) porque MLRun no configura límites
+    # de memoria en el pod, lo que haría que el porcentaje sea siempre 0 o NaN.
+    - name: dira.recursos
+      interval: 30s
+      rules:
+
+        # Alerta si el pod lleva más de 5 minutos usando más del 80% de CPU.
+        # rate() calcula el uso medio de CPU en ventana de 5 minutos.
+        # Un núcleo completo = 1.0. El umbral 0.8 equivale al 80% de un núcleo.
+        - alert: DiraInferHighCPU
+          expr: |
+            sum(rate(container_cpu_usage_seconds_total{
+              pod=~"dira-infer.*", container!=""
+            }[5m])) > 0.8
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "CPU alta en dira-infer ({{ $value | humanizePercentage }})"
+            description: "El pod dira-infer lleva >5 min usando más del 80% de un núcleo de CPU."
+
+        # Alerta si la memoria supera 700 MB.
+        # El pod usa ~456 MB en reposo con el modelo LightGBM cargado.
+        # 700 MB indica una fuga de memoria o acumulación excesiva en el log CSV.
+        # Se usa container_memory_working_set_bytes (memoria activa, sin caché del SO).
+        - alert: DiraInferHighMemory
+          expr: |
+            sum(container_memory_working_set_bytes{
+              pod=~"dira-infer.*", container!=""
+            }) > 734003200
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Memoria alta en dira-infer ({{ $value | humanize1024 }}B)"
+            description: "El pod dira-infer usa más de 700 MB de memoria. Valor actual: {{ $value | humanize1024 }}B."
+
+    # ── Grupo 4: Comportamiento del modelo ───────────────────────────────────
+    # Alertas sobre la calidad y distribución de las predicciones.
+    # Intervalo de 60s: estas métricas cambian más lento.
+    - name: dira.modelo
+      interval: 60s
+      rules:
+
+        # Alerta cuando Evidently detecta deriva de datos significativa.
+        # El umbral 0.20 está alineado con DRIFT_THRESHOLD en drift_check.py:
+        # cuando la alerta dispara, el CronJob ya habrá intentado el reentrenamiento.
+        # 'for: 0m' dispara inmediatamente — el drift ya es evidencia suficiente.
+        - alert: DiraDataDriftDetected
+          expr: dira_data_drift_score > 0.20
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Deriva de datos detectada (score={{ $value | humanize }})"
+            description: "El {{ $value | humanizePercentage }} de las variables han derivado respecto al dataset de entrenamiento. El CronJob habrá disparado reentrenamiento automático."
+
+        # Alerta si más del 50% de las predicciones recientes son de alto riesgo.
+        # Puede indicar un cambio real en la población o datos de entrada erróneos.
+        # rate() mide la proporción en ventana móvil de 10 minutos.
+        # 'for: 5m' requiere que se mantenga durante 5 minutos para evitar falsas alarmas
+        # causadas por ráfagas cortas de tráfico anómalo o pruebas puntuales.
+        - alert: DiraHighRiskSurge
+          expr: |
+            rate(dira_predictions_total{nivel_riesgo=~"ALTO.*"}[10m])
+            /
+            rate(dira_predictions_total[10m])
+            > 0.5
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Incremento anómalo de predicciones de alto riesgo ({{ $value | humanizePercentage }})"
+            description: "Más del 50% de las predicciones recientes son de alto riesgo. Posible deriva de distribución o error en los datos de entrada."

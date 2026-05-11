@@ -180,15 +180,54 @@ El sistema completo se despliega en un clúster Kubernetes ligero mediante:
 | Componente | Rol |
 |---|---|
 | **k3s** | Clúster Kubernetes local |
-| **Helm** | Gestión del despliegue (ConfigMaps, PVCs, frontend) |
+| **Helm** | Gestión del despliegue (ConfigMaps, PVCs, frontend, CronJobs) |
 | **MLRun CE** | Ciclo de vida del modelo: Jobs, Model Registry, Serving |
 | **Nuclio** | Runtime serverless para la función de inferencia |
 | **FastAPI** | API de inferencia (protocolo Open Inference V2) |
 | **nginx** | Servidor del frontend web |
 | **Docker Hub** | Registro de imágenes |
 | **GitHub Actions** | CI/CD: build → push → despliegue → entrenamiento |
+| **Prometheus** | Recogida de métricas operativas y de modelo |
+| **Grafana** | Dashboards de métricas operativas y deriva de datos |
+| **Alertmanager** | Enrutamiento de alertas con notificaciones por Telegram |
+| **Evidently AI** | Detección de deriva de datos en inferencias recientes |
 
 El pipeline CI/CD detecta cambios en el código del modelo y lanza automáticamente un nuevo ciclo de entrenamiento y despliegue sin intervención manual.
+
+---
+
+## Monitorización y observabilidad
+
+El sistema incluye una capa de observabilidad completa desplegada en el namespace `monitoring`:
+
+**Métricas operativas** (recogidas por Prometheus desde `/metrics` del pod de inferencia):
+- Peticiones por segundo y por minuto, latencia HTTP
+- Tasa de errores 5xx
+- Uso de CPU y memoria del pod
+
+**Métricas del modelo** (contadores y distribuciones registradas en la propia API):
+- `dira_predictions_total` — contador de predicciones por nivel de riesgo (BAJO / MODERADO / ALTO)
+- `dira_prediction_probability` — histograma de probabilidades predichas
+- `dira_model_loaded` — indicador de modelo cargado en memoria
+
+**Detección de deriva de datos** (CronJob horario con Evidently AI):
+- Compara la distribución de las inferencias recientes contra el dataset de entrenamiento
+- Empuja el score de drift a Prometheus Pushgateway
+- Si el score supera el umbral (0.20), dispara automáticamente un reentrenamiento vía GitHub Actions
+
+**Alertas** (Alertmanager → Telegram):
+- `DiraInferHighCPU` / `DiraInferHighMemory` — recursos operativos
+- `DiraInferHighErrorRate` / `DiraInferDown` — disponibilidad del servicio
+- `DiraDataDriftDetected` — deriva de datos detectada
+- `DiraHighRiskSurge` — incremento anómalo de predicciones de alto riesgo
+- `DiraModelNotLoaded` — modelo no cargado en memoria
+
+**Simulación de entorno anómalo**:
+
+```bash
+python src/monitoring/simulate_anomaly.py \
+  --url http://<node-ip>:<port> --n 200
+```
 
 ---
 
@@ -199,9 +238,14 @@ DIRA/
 ├── .github/workflows/ci-cd.yml   # CI/CD: build → Docker Hub → k3s → MLRun
 ├── docker/
 │   ├── train/Dockerfile           # imagen dira-train (Python 3.11)
-│   ├── infer/Dockerfile           # imagen dira-infer (Python 3.11, FastAPI)
-│   └── front/Dockerfile           # imagen dira-front (nginx)
-├── helm/dira/                     # chart Helm: ConfigMap, PVCs, frontend
+│   ├── infer/Dockerfile           # imagen dira-infer (Python 3.11, FastAPI + /metrics)
+│   ├── front/Dockerfile           # imagen dira-front (nginx)
+│   └── drift/Dockerfile           # imagen dira-drift (Evidently AI)
+├── helm/
+│   ├── dira/                      # chart DIRA: ConfigMap, PVCs, frontend, drift CronJob
+│   └── monitoring/
+│       ├── values-prometheus.yaml # kube-prometheus-stack (Prometheus+Grafana+Alertmanager)
+│       └── dira-rules.yaml        # PrometheusRule con 7 reglas de alerta
 ├── src/
 │   ├── backend/
 │   │   ├── data_ingestion.py
@@ -209,15 +253,19 @@ DIRA/
 │   │   ├── train.py
 │   │   ├── mlrun_project.py
 │   │   ├── infer.py
-│   │   └── main_api.py
-│   └── frontend/
-│       ├── index.html
-│       ├── css/styles.css
-│       └── js/
-│           ├── config.js          # API_URL inyectada vía envsubst al arrancar
-│           └── app.js
+│   │   └── main_api.py            # + métricas Prometheus + log de inferencias
+│   ├── frontend/
+│   │   ├── index.html
+│   │   ├── css/styles.css
+│   │   └── js/
+│   │       ├── config.js
+│   │       └── app.js
+│   └── monitoring/
+│       ├── drift_check.py         # Evidently + Pushgateway + feedback loop
+│       └── simulate_anomaly.py    # simulación de entorno anómalo
 ├── requirements_train.txt
-└── requirements_infer.txt
+├── requirements_infer.txt
+└── requirements_drift.txt
 ```
 
 ---
@@ -240,3 +288,6 @@ El proyecto ha sido desarrollado en **Python** utilizando las siguientes librer�
 - shap  
 - dython  
 - cloudpickle  
+- evidently  
+- prometheus-client  
+- prometheus-fastapi-instrumentator  

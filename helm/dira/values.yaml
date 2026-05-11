@@ -1,28 +1,53 @@
-# Configuración del modelo y preprocesamiento
+# ── Helm chart DIRA – valores de configuración ───────────────────────────────
+#
+# Este fichero centraliza toda la configuración del chart. Los templates de
+# helm/dira/templates/ referencian estos valores con {{ .Values.<clave> }}.
+# Para sobreescribir un valor en tiempo de despliegue:
+#   helm upgrade dira helm/dira --set frontend.apiUrl=http://...
+
+# ── Configuración del modelo y entrenamiento ──────────────────────────────────
+# Estos valores se inyectan como variables de entorno en los pods de train e infer
+# a través del ConfigMap 'dira-config' (templates/configmap.yaml).
 config:
-  dataDir: "/data"
-  dataFilename: "diabetes_binary_health_indicators_BRFSS2015.csv"
-  modelPath: "/model/modelo_diabetes_DIRA.pkl"
-  randomState: "42"
-  nIter: "25"
-  cvFolds: "5"
-  umbralBajo: "0.30"
-  umbralAlto: "0.70"
-  # URI del API de MLRun desplegado en el mismo clúster
-  mlrunDbPath: "http://mlrun-api.mlrun.svc.cluster.local:8080"
+  dataDir:      "/data"                                          # Directorio donde está montado el dataset (data-pvc)
+  dataFilename: "diabetes_binary_health_indicators_BRFSS2015.csv" # Nombre del CSV del dataset BRFSS
+  modelPath:    "/model/modelo_diabetes_DIRA.pkl"                # Ruta donde train.py guarda el pipeline serializado
+  randomState:  "42"    # Semilla aleatoria para reproducibilidad de train/test split y RandomizedSearchCV
+  nIter:        "25"    # Iteraciones de RandomizedSearchCV: equilibrio entre tiempo y calidad
+  cvFolds:      "5"     # Folds de validación cruzada estratificada
+  umbralBajo:   "0.30"  # Probabilidad < 0.30 → BAJO RIESGO (Verde)
+  umbralAlto:   "0.70"  # Probabilidad > 0.70 → ALTO RIESGO (Rojo); entre ambos → MODERADO
+  # URI interna del API de MLRun. Solo accesible desde dentro del clúster.
+  mlrunDbPath:  "http://mlrun-api.mlrun.svc.cluster.local:8080"
 
-# Frontend web
+# ── Frontend web ──────────────────────────────────────────────────────────────
+# Nginx sirve los ficheros estáticos de src/frontend/ y sustituye API_URL
+# en config.js al arrancar el contenedor (ver docker/front/40-envsubst.sh).
 frontend:
-  image: dira-front:latest
-  imagePullPolicy: IfNotPresent
-  apiUrl: "http://192.168.1.131:31995"
-  nodePort: 30100
+  image:           dira-front:latest    # Imagen construida desde docker/front/Dockerfile
+  imagePullPolicy: IfNotPresent         # No re-descargar si ya está en k3s
+  apiUrl:          "http://192.168.1.131:31995"  # URL del endpoint de inferencia accesible desde el navegador
+  nodePort:        30100                # Puerto externo del servicio NodePort del frontend
 
-# Tamaños de los volúmenes persistentes
+# ── Monitorización y detección de deriva ─────────────────────────────────────
+# Valores usados por el CronJob de drift (templates/drift-cronjob.yaml).
+monitoring:
+  driftImage:     dira-drift:latest    # Imagen con Evidently AI + prometheus_client
+  driftSchedule:  "0 * * * *"          # Cron: ejecutar el drift check cada hora en punto
+  # URL del Pushgateway donde el CronJob deposita las métricas de drift.
+  # Al ser un proceso batch de vida corta, no puede exponer /metrics directamente.
+  pushgatewayUrl: "http://pushgateway-prometheus-pushgateway.monitoring.svc.cluster.local:9091"
+  driftThreshold: "0.20"               # Si share_of_drifted_columns > 0.20 se dispara reentrenamiento
+  githubRepo:     "angelortegauclm/DIRA"         # Repositorio para el workflow_dispatch de reentrenamiento
+  githubBranch:   "main"                          # Rama sobre la que se lanza el CI/CD
+
+# ── Volúmenes persistentes ────────────────────────────────────────────────────
+# PVCs gestionados en templates/pvc.yaml y montados por train e infer.
+# ReadWriteOnce: solo un pod puede escribir a la vez (adecuado para k3s single-node).
 storage:
   dataPvc:
-    size: 1Gi
+    size:       1Gi              # Dataset CSV (~22 MB) + margen para versiones futuras
     accessMode: ReadWriteOnce
   modelPvc:
-    size: 500Mi
+    size:       500Mi            # Modelo .pkl (~2.3 MB) + inference_log.csv + reference_sample.csv
     accessMode: ReadWriteOnce

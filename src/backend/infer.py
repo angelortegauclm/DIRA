@@ -43,7 +43,13 @@ class DIRAPredictor:
         self.expected_columns = None
 
     def load(self):
-        """Carga el pipeline desde disco"""
+        """Carga el pipeline desde disco de forma lazy (solo la primera vez).
+
+        El pipeline serializado con cloudpickle incluye tanto el preprocesador
+        (ColumnTransformer) como el modelo LightGBM. cloudpickle serializa el
+        bytecode de las funciones locales (bmi_clipper_function), por lo que
+        el contenedor de inferencia no necesita importar features.py.
+        """
         if self._pipeline is None:
             if not os.path.exists(self.model_path):
                 raise FileNotFoundError(
@@ -84,6 +90,9 @@ class DIRAPredictor:
  
         resultados = []
         for prob, pred in zip(probs, preds):
+            # Clasificar la probabilidad en tres niveles clínicos.
+            # Los umbrales (0.30 y 0.70) son configurables por variables de entorno
+            # UMBRAL_BAJO y UMBRAL_ALTO para ajustar la sensibilidad sin recompilar.
             if prob < UMBRAL_BAJO:
                 nivel = "BAJO RIESGO (Verde)"
                 accion = "Mantener hábitos saludables. Revisión preventiva en 2 años."

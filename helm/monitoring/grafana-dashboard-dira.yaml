@@ -1,0 +1,332 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dira-grafana-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  dira-dashboard.json: |
+    {
+      "title": "DIRA – Monitorización",
+      "uid": "dira-monitoring-v1",
+      "description": "Métricas operativas, del modelo y deriva de datos de DIRA",
+      "tags": ["dira", "mlops"],
+      "schemaVersion": 38,
+      "version": 1,
+      "time": { "from": "now-1h", "to": "now" },
+      "refresh": "30s",
+      "panels": [
+        {
+          "id": 1,
+          "type": "stat",
+          "title": "Modelo cargado",
+          "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"] },
+            "colorMode": "background",
+            "graphMode": "none",
+            "textMode": "auto",
+            "orientation": "auto"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                { "type": "value", "options": { "0": { "text": "NO CARGADO", "color": "red" }, "1": { "text": "OK", "color": "green" } } }
+              ],
+              "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "red" }, { "value": 1, "color": "green" }] },
+              "color": { "mode": "thresholds" }
+            }
+          },
+          "targets": [{ "expr": "dira_model_loaded{job=\"dira-infer\"}", "legendFormat": "", "refId": "A" }],
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "id": 2,
+          "type": "stat",
+          "title": "Peticiones / min",
+          "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"] },
+            "colorMode": "background",
+            "graphMode": "area",
+            "textMode": "auto"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqpm",
+              "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "blue" }] },
+              "color": { "mode": "thresholds" }
+            }
+          },
+          "targets": [{
+            "expr": "sum(rate(http_requests_total{job=\"dira-infer\", handler=\"/infer\"}[1m])) * 60",
+            "legendFormat": "",
+            "refId": "A"
+          }],
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "id": 3,
+          "type": "stat",
+          "title": "Tasa error 5xx",
+          "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"] },
+            "colorMode": "background",
+            "graphMode": "area",
+            "textMode": "auto"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "green" }, { "value": 0.01, "color": "yellow" }, { "value": 0.05, "color": "red" }] },
+              "color": { "mode": "thresholds" }
+            }
+          },
+          "targets": [{
+            "expr": "sum(rate(http_requests_total{job=\"dira-infer\", status=~\"5..\"}[5m])) / sum(rate(http_requests_total{job=\"dira-infer\"}[5m]))",
+            "legendFormat": "",
+            "refId": "A"
+          }],
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "id": 4,
+          "type": "stat",
+          "title": "Latencia P95",
+          "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"] },
+            "colorMode": "background",
+            "graphMode": "area",
+            "textMode": "auto"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "green" }, { "value": 0.5, "color": "yellow" }, { "value": 1, "color": "red" }] },
+              "color": { "mode": "thresholds" }
+            }
+          },
+          "targets": [{
+            "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=\"dira-infer\"}[5m])) by (le))",
+            "legendFormat": "",
+            "refId": "A"
+          }],
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "id": 5,
+          "type": "gauge",
+          "title": "Score de Deriva (Drift)",
+          "gridPos": { "h": 4, "w": 8, "x": 16, "y": 0 },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"] },
+            "orientation": "auto",
+            "showThresholdLabels": true,
+            "showThresholdMarkers": true
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0, "max": 1,
+              "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "green" }, { "value": 0.15, "color": "yellow" }, { "value": 0.30, "color": "red" }] },
+              "color": { "mode": "thresholds" }
+            }
+          },
+          "targets": [{ "expr": "dira_data_drift_score", "legendFormat": "", "refId": "A" }],
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "id": 6,
+          "type": "timeseries",
+          "title": "Peticiones HTTP por estado",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+          "options": {
+            "tooltip": { "mode": "multi" },
+            "legend": { "displayMode": "list", "placement": "bottom" }
+          },
+          "fieldConfig": {
+            "defaults": { "unit": "reqps", "custom": { "lineWidth": 2, "fillOpacity": 10 } },
+            "overrides": [
+              { "matcher": { "id": "byName", "options": "5xx" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] },
+              { "matcher": { "id": "byName", "options": "2xx" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] },
+              { "matcher": { "id": "byName", "options": "4xx" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }] }
+            ]
+          },
+          "targets": [{
+            "expr": "sum by (status) (rate(http_requests_total{job=\"dira-infer\", handler=\"/infer\"}[1m]))",
+            "legendFormat": "{{status}}",
+            "refId": "A"
+          }],
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "id": 7,
+          "type": "timeseries",
+          "title": "Latencia P50 / P95 / P99",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+          "options": {
+            "tooltip": { "mode": "multi" },
+            "legend": { "displayMode": "list", "placement": "bottom" }
+          },
+          "fieldConfig": {
+            "defaults": { "unit": "s", "custom": { "lineWidth": 2 } }
+          },
+          "targets": [
+            { "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{job=\"dira-infer\", handler=\"/infer\"}[5m])) by (le))", "legendFormat": "P50", "refId": "A" },
+            { "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=\"dira-infer\", handler=\"/infer\"}[5m])) by (le))", "legendFormat": "P95", "refId": "B" },
+            { "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{job=\"dira-infer\", handler=\"/infer\"}[5m])) by (le))", "legendFormat": "P99", "refId": "C" }
+          ],
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "id": 8,
+          "type": "bargauge",
+          "title": "Predicciones totales por nivel de riesgo",
+          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 12 },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"] },
+            "orientation": "horizontal",
+            "displayMode": "gradient",
+            "showUnfilled": true
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "green" }, { "value": 100, "color": "yellow" }, { "value": 500, "color": "red" }] },
+              "color": { "mode": "thresholds" }
+            }
+          },
+          "targets": [{
+            "expr": "dira_predictions_total",
+            "legendFormat": "{{nivel_riesgo}}",
+            "refId": "A",
+            "instant": true
+          }],
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "id": 9,
+          "type": "timeseries",
+          "title": "Tasa de predicciones por nivel de riesgo (pred/s)",
+          "gridPos": { "h": 8, "w": 16, "x": 8, "y": 12 },
+          "options": {
+            "tooltip": { "mode": "multi" },
+            "legend": { "displayMode": "list", "placement": "bottom" }
+          },
+          "fieldConfig": {
+            "defaults": { "unit": "ops", "custom": { "lineWidth": 2, "fillOpacity": 15 } },
+            "overrides": [
+              { "matcher": { "id": "byFrameRefID", "options": "C" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] },
+              { "matcher": { "id": "byFrameRefID", "options": "B" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }] },
+              { "matcher": { "id": "byFrameRefID", "options": "A" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] }
+            ]
+          },
+          "targets": [
+            { "expr": "rate(dira_predictions_total{nivel_riesgo=~\"BAJO.*\"}[5m])", "legendFormat": "Bajo riesgo", "refId": "A" },
+            { "expr": "rate(dira_predictions_total{nivel_riesgo=~\".*MODERADO.*\"}[5m])", "legendFormat": "Moderado", "refId": "B" },
+            { "expr": "rate(dira_predictions_total{nivel_riesgo=~\"ALTO.*\"}[5m])", "legendFormat": "Alto riesgo", "refId": "C" }
+          ],
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "id": 10,
+          "type": "timeseries",
+          "title": "Historial de drift score",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+          "options": {
+            "tooltip": { "mode": "single" },
+            "legend": { "displayMode": "list", "placement": "bottom" }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0, "max": 1,
+              "custom": { "lineWidth": 2, "fillOpacity": 20 },
+              "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "green" }, { "value": 0.15, "color": "yellow" }, { "value": 0.30, "color": "red" }] },
+              "color": { "mode": "thresholds" }
+            }
+          },
+          "targets": [{ "expr": "dira_data_drift_score", "legendFormat": "Drift global", "refId": "A" }],
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "id": 11,
+          "type": "bargauge",
+          "title": "Drift por variable (top columnas)",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"] },
+            "orientation": "horizontal",
+            "displayMode": "gradient",
+            "showUnfilled": true
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0, "max": 1,
+              "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "green" }, { "value": 0.05, "color": "yellow" }, { "value": 0.1, "color": "red" }] },
+              "color": { "mode": "thresholds" }
+            }
+          },
+          "targets": [{
+            "expr": "topk(10, dira_column_drift_score)",
+            "legendFormat": "{{column}}",
+            "refId": "A",
+            "instant": true
+          }],
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "id": 12,
+          "type": "timeseries",
+          "title": "CPU del pod dira-infer (%)",
+          "gridPos": { "h": 7, "w": 12, "x": 0, "y": 28 },
+          "options": {
+            "tooltip": { "mode": "single" },
+            "legend": { "displayMode": "list", "placement": "bottom" }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0, "max": 1,
+              "custom": { "lineWidth": 2 },
+              "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "green" }, { "value": 0.6, "color": "yellow" }, { "value": 0.8, "color": "red" }] },
+              "color": { "mode": "thresholds" }
+            }
+          },
+          "targets": [{
+            "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"mlrun\", pod=~\"dira-infer.*\", container!=\"\"}[5m]))",
+            "legendFormat": "CPU dira-infer",
+            "refId": "A"
+          }],
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "id": 13,
+          "type": "timeseries",
+          "title": "Memoria del pod dira-infer (MB)",
+          "gridPos": { "h": 7, "w": 12, "x": 12, "y": 28 },
+          "options": {
+            "tooltip": { "mode": "single" },
+            "legend": { "displayMode": "list", "placement": "bottom" }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "custom": { "lineWidth": 2 },
+              "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "green" }, { "value": 400000000, "color": "yellow" }, { "value": 700000000, "color": "red" }] },
+              "color": { "mode": "thresholds" }
+            }
+          },
+          "targets": [{
+            "expr": "sum(container_memory_working_set_bytes{namespace=\"mlrun\", pod=~\"dira-infer.*\", container!=\"\"})",
+            "legendFormat": "Memoria dira-infer",
+            "refId": "A"
+          }],
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        }
+      ]
+    }

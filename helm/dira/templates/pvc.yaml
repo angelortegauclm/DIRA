@@ -1,3 +1,23 @@
+# ── Volúmenes persistentes de DIRA ───────────────────────────────────────────
+#
+# Define dos PersistentVolumeClaims que actúan como disco compartido entre pods:
+#
+#   data-pvc   → dataset CSV de entrenamiento (solo escritura inicial, lectura por train)
+#   model-pvc  → modelo .pkl + inference_log.csv + reference_sample.csv
+#                (escrito por train, leído por infer y por el CronJob de drift)
+#
+# En k3s con StorageClass 'local-path', cada PVC se mapea a un directorio en
+# el nodo: /var/lib/rancher/k3s/storage/<pvc-uid>/
+#
+# ReadWriteOnce: un solo nodo puede montar el volumen en modo escritura.
+# Adecuado para k3s single-node. En clústeres multi-nodo se necesitaría
+# ReadWriteMany con un proveedor de almacenamiento compartido (NFS, Longhorn...).
+
+# ── data-pvc: dataset de entrenamiento ───────────────────────────────────────
+# Contiene el CSV del dataset BRFSS (~22 MB).
+# Se copia manualmente una vez:
+#   kubectl cp data/<csv> dira/<train-pod>:/data/<csv>
+# Después solo los pods de entrenamiento lo leen.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -13,6 +33,12 @@ spec:
     requests:
       storage: {{ .Values.storage.dataPvc.size }}
 ---
+# ── model-pvc: modelo y logs de inferencia ───────────────────────────────────
+# Volumen compartido entre tres componentes:
+#   - dira-train (Job): escribe modelo_diabetes_DIRA.pkl y reference_sample.csv
+#   - dira-infer (Deployment): lee el .pkl para inferencia; escribe inference_log.csv
+#   - dira-drift-check (CronJob): lee inference_log.csv y reference_sample.csv
+# La concurrencia de escritura está gestionada por threading.Lock en main_api.py.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
