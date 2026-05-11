@@ -1,0 +1,106 @@
+# ── CronJob de detección de deriva de datos ───────────────────────────────────
+#
+# Ejecuta drift_check.py cada hora en el namespace mlrun para comparar la
+# distribución de las inferencias recientes contra el dataset de entrenamiento.
+#
+# Se despliega en el namespace MLRUN (no en dira) porque el pod de inferencia
+# también está en mlrun y ambos comparten el mismo model-pvc. Los PVCs son
+# namespace-scoped en Kubernetes, por lo que el CronJob debe estar en el mismo
+# namespace que el pod al que quiere acceder via volumen compartido.
+#
+# Ficheros accedidos desde model-pvc:
+#   /model/inference_log.csv     → escrito por main_api.py en cada inferencia
+#   /model/reference_sample.csv  → escrito por train.py al final del entrenamiento
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: dira-drift-check
+  # Namespace mlrun: comparte model-pvc con el pod de inferencia dira-infer
+  namespace: mlrun
+  labels:
+    app.kubernetes.io/name: dira-drift-check
+    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+spec:
+  # Frecuencia de ejecución: valor configurable desde values.yaml
+  # Por defecto "0 * * * *" = cada hora en punto
+  schedule: {{ .Values.monitoring.driftSchedule | quote }}
+
+  # Evitar ejecuciones simultáneas si el job anterior aún no terminó.
+  # Importante para no duplicar métricas en el Pushgateway.
+  concurrencyPolicy: Forbid
+
+  # Historial de jobs completados/fallidos conservados para diagnóstico
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          # OnFailure: si el contenedor termina con error, Kubernetes lo
+          # reiniciará automáticamente (hasta el backoffLimit por defecto)
+          restartPolicy: OnFailure
+
+          containers:
+            - name: drift-check
+              # Imagen ligera (~270 MB) con Evidently AI + prometheus_client
+              # Construida desde docker/drift/Dockerfile
+              image: {{ .Values.monitoring.driftImage }}
+              imagePullPolicy: IfNotPresent
+
+              env:
+                # Ruta al CSV de referencia generado por train.py al entrenar
+                - name: DATA_PATH
+                  value: /model/reference_sample.csv
+
+                # Ruta al log de inferencias escrito por main_api.py
+                - name: INFERENCE_LOG_PATH
+                  value: /model/inference_log.csv
+
+                # URL del Prometheus Pushgateway donde se depositan las métricas.
+                # Al ser un proceso batch de vida corta, no puede exponer /metrics
+                # directamente — el Pushgateway actúa como buzón intermedio.
+                - name: PUSHGATEWAY_URL
+                  value: {{ .Values.monitoring.pushgatewayUrl | quote }}
+
+                # Umbral de drift para disparar el reentrenamiento automático.
+                # Si share_of_drifted_columns > threshold → workflow_dispatch
+                - name: DRIFT_THRESHOLD
+                  value: {{ .Values.monitoring.driftThreshold | quote }}
+
+                # Repositorio de GitHub en formato "usuario/repo"
+                # Necesario para construir la URL de workflow_dispatch
+                - name: GITHUB_REPO
+                  value: {{ .Values.monitoring.githubRepo | quote }}
+
+                # Rama sobre la que se disparará el reentrenamiento
+                - name: GITHUB_BRANCH
+                  value: {{ .Values.monitoring.githubBranch | quote }}
+
+                # Token de GitHub con scope 'workflow' para disparar el CI/CD.
+                # Se lee del Secret 'dira-github-secret' creado manualmente:
+                #   kubectl create secret generic dira-github-secret \
+                #     --from-literal=token=<PAT> -n mlrun
+                # optional: true → el CronJob arranca aunque el secret no exista
+                # (en ese caso el feedback loop queda deshabilitado pero el drift
+                # check y las métricas siguen funcionando)
+                - name: GITHUB_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: dira-github-secret
+                      key: token
+                      optional: true
+
+              volumeMounts:
+                # Montar el model-pvc en /model para acceder a inference_log.csv
+                # y reference_sample.csv generados por el pod de inferencia y train
+                - name: model-vol
+                  mountPath: /model
+
+          volumes:
+            # model-pvc es el mismo volumen que monta el pod dira-infer,
+            # lo que permite al CronJob leer el log de inferencias sin red.
+            # Nota: este PVC está en el namespace mlrun (no en dira).
+            - name: model-vol
+              persistentVolumeClaim:
+                claimName: model-pvc

@@ -1,0 +1,172 @@
+# ── kube-prometheus-stack – Configuración de monitorización DIRA ─────────────
+#
+# Este fichero configura el stack completo de observabilidad desplegado con:
+#
+#   helm install monitoring prometheus-community/kube-prometheus-stack \
+#     --namespace monitoring --create-namespace \
+#     -f helm/monitoring/values-prometheus.yaml
+#
+#   helm install pushgateway prometheus-community/prometheus-pushgateway \
+#     --namespace monitoring
+#
+# El stack incluye: Prometheus, Grafana, Alertmanager, kube-state-metrics.
+# Node-exporter está deshabilitado porque MLRun CE ya despliega el suyo propio.
+#
+# Antes de instalar, rellenar los valores de Telegram:
+#   alertmanager.config.receivers[0].telegram_configs[0].bot_token
+#   alertmanager.config.receivers[0].telegram_configs[0].chat_id
+#
+# Para crear el secret con el token de GitHub (feedback loop):
+#   kubectl create secret generic dira-github-secret \
+#     --from-literal=token=<GITHUB_PAT> -n mlrun
+
+# ── Prometheus Operator ───────────────────────────────────────────────────────
+# El operador de Prometheus gestiona los recursos CRD (PrometheusRule,
+# ServiceMonitor, PodMonitor) y reconcilia el estado del clúster.
+#
+# IMPORTANTE: MLRun CE instala su propio Prometheus Operator en el namespace
+# mlrun. Si ambos operadores vigilan todos los namespaces se produce un
+# conflicto: uno crea el StatefulSet y el otro lo destruye en un bucle.
+# Solución: restringir este operador al namespace 'monitoring' únicamente.
+prometheusOperator:
+  namespaces:
+    releaseNamespace: true   # solo vigila el namespace donde está instalado
+    additional: []           # sin namespaces adicionales → evita conflicto con MLRun
+
+# ── Prometheus ────────────────────────────────────────────────────────────────
+# Instancia de Prometheus que recoge métricas del clúster y de la API DIRA.
+prometheus:
+  service:
+    type: NodePort
+    nodePort: 30091   # accesible en http://<node-ip>:30091
+  prometheusSpec:
+    retention: 15d    # retención de métricas durante 15 días
+
+    # Descubrimiento de recursos en todos los namespaces.
+    # Sin estos selectores vacíos, Prometheus solo descubriría PodMonitors
+    # y ServiceMonitors en su propio namespace.
+    podMonitorNamespaceSelector: {}
+    podMonitorSelector: {}
+    serviceMonitorNamespaceSelector: {}
+    serviceMonitorSelector: {}
+    ruleNamespaceSelector: {}
+    ruleSelector: {}
+
+    # Scrape adicionales no gestionados por CRDs (pods sin ServiceMonitor)
+    additionalScrapeConfigs:
+
+      # ── Scrape del pod dira-infer ─────────────────────────────────────────
+      # El pod de inferencia corre en el namespace mlrun gestionado por MLRun/Nuclio.
+      # No tiene ServiceMonitor, así que se descubre por nombre de pod.
+      # prometheus-fastapi-instrumentator expone /metrics en el puerto 8000.
+      - job_name: dira-infer
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [mlrun]   # solo busca pods en el namespace mlrun
+        relabel_configs:
+          # Filtrar únicamente el pod cuyo nombre empieza por 'dira-infer'
+          - source_labels: [__meta_kubernetes_pod_name]
+            regex: "dira-infer.*"
+            action: keep
+          # Construir la dirección de scrape: IP del pod + puerto 8000
+          - source_labels: [__meta_kubernetes_pod_ip]
+            replacement: "$1:8000"
+            target_label: __address__
+          # Ruta del endpoint de métricas expuesta por FastAPI
+          - replacement: /metrics
+            target_label: __metrics_path__
+          # Propagar etiquetas de Kubernetes para filtrar en Grafana
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+
+      # ── Scrape del Pushgateway ────────────────────────────────────────────
+      # El CronJob de drift (proceso batch de vida corta) no puede ser
+      # scrapeado directamente. Empuja sus métricas al Pushgateway, que las
+      # retiene hasta que Prometheus las recoge en el siguiente ciclo.
+      # honor_labels: true preserva las etiquetas originales empujadas por
+      # el CronJob (job="dira_drift") en lugar de sobreescribirlas.
+      - job_name: pushgateway
+        static_configs:
+          - targets: ["pushgateway-prometheus-pushgateway.monitoring.svc.cluster.local:9091"]
+        honor_labels: true
+
+# ── Grafana ───────────────────────────────────────────────────────────────────
+# Dashboard de visualización de métricas. Accesible en http://<node-ip>:30030.
+# El sidecar escanea ConfigMaps con la etiqueta grafana_dashboard=1 y los
+# carga automáticamente sin necesidad de reiniciar Grafana.
+grafana:
+  service:
+    type: NodePort
+    nodePort: 30030   # accesible en http://<node-ip>:30030
+  adminPassword: "CHANGEME"   # sobreescrito por values-secrets.yaml (gitignoreado)
+  sidecar:
+    dashboards:
+      enabled: true
+      searchNamespace: monitoring   # namespace donde buscar ConfigMaps de dashboards
+      label: grafana_dashboard      # etiqueta que deben tener los ConfigMaps
+      labelValue: "1"
+
+# ── Alertmanager ──────────────────────────────────────────────────────────────
+# Gestiona el enrutamiento de alertas disparadas por Prometheus.
+# Las alertas DIRA se enrutan al bot de Telegram DIRAProject_bot.
+alertmanager:
+  service:
+    type: NodePort
+    nodePort: 30093   # accesible en http://<node-ip>:30093
+  config:
+    global:
+      resolve_timeout: 5m   # tiempo para marcar una alerta como resuelta
+
+    route:
+      group_by: [alertname]    # agrupar alertas del mismo tipo en una sola notificación
+      group_wait: 30s          # esperar 30s antes del primer envío por si llegan más alertas del grupo
+      group_interval: 5m       # intervalo mínimo entre notificaciones del mismo grupo
+      repeat_interval: 4h      # reenviar la alerta si sigue activa tras 4 horas
+      receiver: telegram        # receptor por defecto para todas las alertas
+
+      routes:
+        # Las alertas críticas se reenvían cada hora en lugar de cada 4 horas
+        - matchers: [severity="critical"]
+          receiver: telegram
+          repeat_interval: 1h
+
+    receivers:
+      - name: telegram
+        telegram_configs:
+            # Token y chat_id se pasan en tiempo de despliegue desde
+            # helm/monitoring/values-secrets.yaml (fichero gitignoreado).
+            # Ver helm/monitoring/values-secrets.yaml.example para la estructura.
+          - bot_token: "CHANGEME"
+            chat_id: 0
+            parse_mode: HTML
+            # Plantilla del mensaje: muestra nombre, resumen y descripción de cada alerta
+            message: |
+              🚨 <b>[{{ .Status | toUpper }}] DIRA – {{ .CommonLabels.alertname }}</b>
+              {{- range .Alerts }}
+              📋 <b>{{ .Annotations.summary }}</b>
+              {{- if .Annotations.description }}
+              {{ .Annotations.description }}
+              {{- end }}
+              {{- end }}
+
+    inhibit_rules:
+      # Si ya hay una alerta crítica del mismo tipo, suprimir las de warning
+      # para no saturar el canal de Telegram con duplicados de menor severidad
+      - source_matchers: [severity="critical"]
+        target_matchers: [severity="warning"]
+        equal: [alertname]
+
+# ── Node Exporter ─────────────────────────────────────────────────────────────
+# Deshabilitado porque MLRun CE ya despliega su propio node-exporter en el
+# puerto 9100. Tener dos instancias en el mismo nodo provoca conflicto de puerto.
+nodeExporter:
+  enabled: false
+
+# ── Kube State Metrics ────────────────────────────────────────────────────────
+# Expone métricas de estado de los objetos Kubernetes (deployments, pods, pvcs...).
+# Necesario para las alertas de CPU y memoria basadas en container_* metrics.
+kubeStateMetrics:
+  enabled: true

@@ -1,6 +1,10 @@
 name: DIRA CI/CD
 
-# Disparo: push a main o ejecución manual con opción de forzar entrenamiento
+# ── Disparadores ──────────────────────────────────────────────────────────────
+# El pipeline se activa en dos situaciones:
+#   1. Push a main: despliegue automático tras merge de PR
+#   2. workflow_dispatch manual: permite forzar un reentrenamiento desde la UI
+#      de GitHub Actions o desde drift_check.py (feedback loop automático)
 on:
   push:
     branches: [main]
@@ -12,10 +16,10 @@ on:
         default: false
 
 jobs:
-  # ────────────────────────────────────────────────────────────────────────────
-  # JOB 1 – Construir imágenes y subirlas a Docker Hub
-  # Corre en runner hospedado por GitHub (no necesita acceso al clúster)
-  # ────────────────────────────────────────────────────────────────────────────
+  # ── JOB 1: Build & Push ───────────────────────────────────────────────────
+  # Construye las tres imágenes Docker y las sube a Docker Hub.
+  # Corre en runner de GitHub (ubuntu-latest): no necesita acceso al clúster k3s.
+  # Las imágenes se etiquetan con el SHA del commit (inmutable) y 'latest' (alias).
   build:
     name: Build & Push Docker Hub
     runs-on: ubuntu-latest
@@ -33,17 +37,19 @@ jobs:
       - name: Configurar Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # Cada imagen usa cache de registro (type=registry) para reutilizar capas
+      # de la build anterior y reducir el tiempo de construcción.
       - name: Build y push – dira-train
         uses: docker/build-push-action@v5
         with:
           context: .
           file: docker/train/Dockerfile
           push: true
-          # Etiqueta con SHA (inmutable) y latest (comodín para MLRun por defecto)
+          # SHA: tag inmutable para rollbacks exactos
+          # latest: tag que MLRun usa por defecto cuando no se especifica SHA
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/dira-train:${{ github.sha }}
             ${{ secrets.DOCKERHUB_USERNAME }}/dira-train:latest
-          # Reutilizar capas de la última imagen para acelerar builds
           cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/dira-train:latest
           cache-to:   type=inline
 
@@ -71,13 +77,13 @@ jobs:
           cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/dira-front:latest
           cache-to:   type=inline
 
-  # ────────────────────────────────────────────────────────────────────────────
-  # JOB 2 – Desplegar en k3s y opcionalmente lanzar entrenamiento MLRun
-  # Requiere un runner self-hosted instalado en la misma máquina que k3s
-  # ────────────────────────────────────────────────────────────────────────────
+  # ── JOB 2: Deploy ─────────────────────────────────────────────────────────
+  # Despliega las nuevas imágenes en el clúster k3s.
+  # Requiere el runner self-hosted instalado en la misma máquina que k3s,
+  # con acceso a kubectl y helm.
   deploy:
     name: Deploy to k3s
-    needs: build
+    needs: build   # espera a que el job build termine con éxito
     runs-on: self-hosted
 
     env:
@@ -89,8 +95,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Importar las imágenes recién subidas al containerd de k3s
-      # (k3s no comparte el daemon Docker del host)
+      # Sincronizar el PAT de GitHub al Secret de Kubernetes para el feedback loop.
+      # Así el token se define una sola vez en GitHub Actions y se propaga
+      # automáticamente al CronJob de drift sin gestionarlo manualmente.
+      - name: Sincronizar secret GitHub PAT → Kubernetes
+        run: |
+          kubectl create secret generic dira-github-secret \
+            --from-literal=token=${{ secrets.DIRA_GH_PAT }} \
+            --namespace mlrun \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      # k3s usa containerd, que NO comparte el daemon Docker del host.
+      # Las imágenes subidas a Docker Hub deben importarse explícitamente
+      # al almacén de imágenes de containerd para que los pods puedan usarlas
+      # con imagePullPolicy=IfNotPresent sin necesidad de internet.
       - name: Importar imágenes en k3s
         run: |
           docker pull ${{ env.TRAIN_IMAGE }}
@@ -100,7 +118,10 @@ jobs:
           docker save ${{ env.INFER_IMAGE }}  | sudo k3s ctr images import -
           docker save ${{ env.FRONT_IMAGE }} | sudo k3s ctr images import -
 
-      # Desplegar o actualizar la infraestructura DIRA (ConfigMap + PVCs + frontend)
+      # Actualizar ConfigMap, PVCs y Deployment del frontend.
+      # Se pasa la URL del endpoint de inferencia dinámicamente:
+      # si el servicio ya existe se lee su NodePort; si no, se omite el parámetro
+      # (el valor queda el del values.yaml anterior).
       - name: Helm upgrade – infraestructura DIRA
         run: |
           NODE_IP=$(kubectl get nodes \
@@ -116,9 +137,13 @@ jobs:
             --create-namespace \
             --set frontend.image=${{ env.FRONT_IMAGE }} \
             $INFER_ARGS
+          # Forzar la recreación del pod del frontend para cargar la nueva imagen
           kubectl rollout restart deployment/dira-front -n dira
 
-      # Detectar si cambiaron ficheros que afectan al modelo
+      # Detectar si se modificaron ficheros que afectan al comportamiento del modelo.
+      # Si no cambiaron, se omiten los pasos de entrenamiento para ahorrar tiempo.
+      # En workflow_dispatch con run_training=true se fuerza el entrenamiento
+      # independientemente de qué ficheros cambiaron (feedback loop de drift).
       - name: Detectar cambios en código del modelo
         id: model_changes
         uses: dorny/paths-filter@v3
@@ -130,8 +155,9 @@ jobs:
               - 'src/backend/data_ingestion.py'
               - 'requirements_train.txt'
 
-      # Instalar el SDK de MLRun en el entorno conda 'dira' (Python 3.9)
-      # mlrun==1.10.0 requiere Python <3.12; el runner usa Python 3.12 por defecto
+      # MLRun SDK se instala en el entorno conda 'dira' (Python 3.9).
+      # Se instala en este paso y no en la imagen porque el runner self-hosted
+      # es compartido y mlrun==1.10.0 requiere Python < 3.12.
       - name: Instalar SDK MLRun
         if: steps.model_changes.outputs.model == 'true' || github.event.inputs.run_training == 'true'
         run: |
@@ -139,7 +165,9 @@ jobs:
           conda activate dira
           pip install --quiet "mlrun==1.10.0"
 
-      # Lanzar ciclo de vida MLRun solo si cambió código del modelo o se forzó manualmente
+      # mlrun_project.py lanza el Job de entrenamiento en k3s, espera a que
+      # termine y registra métricas y artefactos en el tracking server de MLRun.
+      # Al finalizar, reinicia el pod de inferencia para cargar el nuevo modelo.
       - name: Lanzar entrenamiento y serving – MLRun
         if: steps.model_changes.outputs.model == 'true' || github.event.inputs.run_training == 'true'
         env:
@@ -151,13 +179,15 @@ jobs:
           conda activate dira
           python src/backend/mlrun_project.py
 
-      # Verificar que el endpoint de inferencia responde después del despliegue
+      # Nuclio crea el servicio dira-infer de forma asíncrona después de que
+      # mlrun_project.py termine. El servicio puede tardar hasta 2 minutos en
+      # aparecer. Se sondea en bucle antes de intentar el health check.
       - name: Health check API de inferencia
         if: steps.model_changes.outputs.model == 'true' || github.event.inputs.run_training == 'true'
         run: |
           NODE=$(kubectl get nodes \
             -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
-          # Esperar a que Nuclio cree el servicio (puede tardar hasta 2 minutos)
+          # Esperar a que Nuclio publique el servicio (máx. 24 intentos × 5s = 2 min)
           for i in $(seq 1 24); do
             PORT=$(kubectl get svc -n nuclio \
               -l nuclio.io/function-name=dira-infer \
@@ -170,5 +200,7 @@ jobs:
             echo "Error: el servicio dira-infer no apareció en Nuclio tras 2 minutos"
             exit 1
           fi
+          # --retry 6 --retry-delay 5: hasta 30 segundos adicionales para que
+          # el pod pase de Starting a Ready y cargue el modelo en memoria
           curl --fail --retry 6 --retry-delay 5 \
             "http://${NODE}:${PORT}/v2/health/ready"

@@ -222,3 +222,6 @@ model/
 mlruns/
 mlartifacts/
 project.yaml
+
+# ── DIRA: secrets de Helm (tokens, passwords — nunca subir al repo) ───────────
+helm/monitoring/values-secrets.yaml

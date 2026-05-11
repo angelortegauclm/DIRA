@@ -1,3 +1,11 @@
+# ── Service del frontend web ─────────────────────────────────────────────────
+#
+# Expone el Deployment dira-front fuera del clúster mediante NodePort.
+# Con NodePort, Kubernetes abre el puerto indicado en TODOS los nodos del
+# clúster, de forma que el frontend es accesible en:
+#   http://<cualquier-IP-del-nodo>:<nodePort>
+#
+# En k3s single-node: http://<node-ip>:30100
 apiVersion: v1
 kind: Service
 metadata:
@@ -7,9 +15,10 @@ metadata:
     app: dira-front
 spec:
   type: NodePort
+  # Enruta el tráfico hacia los pods con etiqueta app=dira-front
   selector:
     app: dira-front
   ports:
-    - port: 80
-      targetPort: 80
-      nodePort: {{ .Values.frontend.nodePort }}
+    - port: 80          # Puerto del Service dentro del clúster
+      targetPort: 80    # Puerto del contenedor nginx al que se redirige
+      nodePort: {{ .Values.frontend.nodePort }}   # Puerto externo (configurable en values.yaml)

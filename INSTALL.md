@@ -60,6 +60,9 @@ Descargable en [Kaggle – Diabetes Health Indicators Dataset](https://www.kaggl
 | 8080 | MLRun API (NodePort interno) |
 | 8060 | MLRun UI (port-forward local, solo para monitorización) |
 | 9000 | Minio (almacenamiento de artefactos) |
+| 30090 | Prometheus (NodePort) |
+| 30030 | Grafana (NodePort) |
+| 30093 | Alertmanager (NodePort) |
 
 ---
 
@@ -449,7 +452,103 @@ GitHub → Actions → DIRA CI/CD → Run workflow → ✓ Forzar lanzamiento de
 
 ---
 
-## 14. Resolución de problemas conocidos
+## 14. Desplegar el stack de monitorización
+
+### 14.1 Instalar kube-prometheus-stack
+
+```bash
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+
+helm install monitoring prometheus-community/kube-prometheus-stack \
+  --namespace monitoring --create-namespace \
+  -f helm/monitoring/values-prometheus.yaml
+```
+
+Acceso una vez desplegado:
+- **Prometheus**: `http://<node-ip>:30090`
+- **Grafana**: `http://<node-ip>:30030` (usuario: `admin`, contraseña: `dira-admin`)
+- **Alertmanager**: `http://<node-ip>:30093`
+
+### 14.2 Instalar Prometheus Pushgateway
+
+```bash
+helm install pushgateway prometheus-community/prometheus-pushgateway \
+  --namespace monitoring
+```
+
+### 14.3 Aplicar las reglas de alerta
+
+```bash
+kubectl apply -f helm/monitoring/dira-rules.yaml
+
+# Verificar que Prometheus las ha cargado
+kubectl get prometheusrule -n monitoring
+```
+
+### 14.4 Configurar Telegram
+
+Antes de instalar el stack, editar `helm/monitoring/values-prometheus.yaml` y rellenar:
+
+```yaml
+telegram_configs:
+  - bot_token: "TOKEN_DEL_BOT"   # BotFather → /newbot
+    chat_id: 123456789            # ID del grupo o canal destino
+```
+
+Para obtener el `chat_id` de un grupo, añadir el bot al grupo y consultar:
+```
+https://api.telegram.org/bot<TOKEN>/getUpdates
+```
+
+### 14.5 Construir e importar la imagen de drift
+
+```bash
+docker build -t dira-drift:latest -f docker/drift/Dockerfile .
+docker save dira-drift:latest | sudo k3s ctr images import -
+```
+
+### 14.6 Crear el secret de GitHub (feedback loop)
+
+El CronJob de drift dispara un reentrenamiento automático vía GitHub Actions cuando detecta deriva. Requiere un PAT con scope `workflow`:
+
+```bash
+kubectl create secret generic dira-github-secret \
+  --from-literal=token=<GITHUB_PAT> \
+  --namespace dira
+```
+
+> Crear el PAT en **GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens**, con permiso `Actions: write` sobre el repositorio DIRA.
+
+### 14.7 Activar el CronJob de drift
+
+El CronJob se despliega automáticamente con el chart DIRA. Para verificarlo:
+
+```bash
+kubectl get cronjob -n dira
+# Esperado: dira-drift-check   0 * * * *   ...
+
+# Forzar una ejecución manual
+kubectl create job --from=cronjob/dira-drift-check drift-manual -n dira
+kubectl logs -n dira -l job-name=drift-manual -f
+```
+
+### 14.8 Simular un entorno anómalo
+
+Para probar las alertas de drift y alto riesgo, enviar tráfico anómalo a la API:
+
+```bash
+python src/monitoring/simulate_anomaly.py \
+  --url http://<node-ip>:<infer-port> \
+  --n 200 \
+  --delay 0.05
+```
+
+Tras la ejecución, el CronJob de drift (o la ejecución manual del paso anterior) detectará la deriva y disparará la alerta en Telegram.
+
+---
+
+## 15. Resolución de problemas conocidos
 
 ### `ModuleNotFoundError: No module named 'data_ingestion'` en el Job de MLRun
 
@@ -522,19 +621,35 @@ run: |
 kubectl get nodes
 kubectl get pods -n mlrun
 kubectl get pods -n dira
+kubectl get pods -n monitoring
 
 # Obtener MLRUN_DBPATH actual
 kubectl get svc -n mlrun mlrun-api -o jsonpath='{.spec.ports[0].nodePort}'
 
 # Logs del Job de entrenamiento más reciente
-kubectl logs -n dira -l mlrun/class=job --tail=100
+kubectl logs -n mlrun -l mlrun/class=job --tail=100
+
+# Logs del CronJob de drift
+kubectl logs -n dira -l job-name=dira-drift-check --tail=100
+
+# Forzar ejecución manual del drift check
+kubectl create job --from=cronjob/dira-drift-check drift-manual -n dira
+
+# Simular entorno anómalo
+python src/monitoring/simulate_anomaly.py --url http://<node-ip>:<port> --n 200
 
 # Actualizar parámetros del chart DIRA
 helm upgrade dira helm/dira --namespace dira --set config.nIter=50
 
+# Actualizar configuración de monitorización (ej. umbral de drift)
+helm upgrade monitoring prometheus-community/kube-prometheus-stack \
+  --namespace monitoring -f helm/monitoring/values-prometheus.yaml
+
 # Desinstalar todo
-helm uninstall dira     --namespace dira
-helm uninstall mlrun    --namespace mlrun
+helm uninstall dira        --namespace dira
+helm uninstall mlrun       --namespace mlrun
+helm uninstall monitoring  --namespace monitoring
+helm uninstall pushgateway --namespace monitoring
 sudo k3s-uninstall.sh
 ```
 
@@ -549,19 +664,25 @@ DIRA/
 │       └── ci-cd.yml              # CI/CD: build → Docker Hub → k3s → MLRun
 ├── docker/
 │   ├── train/Dockerfile           # imagen dira-train (Python 3.11, xgboost-cpu)
-│   ├── infer/Dockerfile           # imagen dira-infer (Python 3.11, FastAPI)
-│   └── front/
-│       ├── Dockerfile             # imagen dira-front (nginx)
-│       └── 40-envsubst.sh         # inyecta API_URL en config.js al arrancar
+│   ├── infer/Dockerfile           # imagen dira-infer (Python 3.11, FastAPI + /metrics)
+│   ├── front/
+│   │   ├── Dockerfile             # imagen dira-front (nginx)
+│   │   └── 40-envsubst.sh         # inyecta API_URL en config.js al arrancar
+│   └── drift/
+│       └── Dockerfile             # imagen dira-drift (Evidently AI)
 ├── helm/
-│   └── dira/
-│       ├── Chart.yaml
-│       ├── values.yaml
-│       └── templates/
-│           ├── configmap.yaml     # ConfigMap con variables de entrenamiento
-│           ├── pvc.yaml           # data-pvc y model-pvc
-│           ├── front-deployment.yaml
-│           └── front-service.yaml
+│   ├── dira/
+│   │   ├── Chart.yaml
+│   │   ├── values.yaml
+│   │   └── templates/
+│   │       ├── configmap.yaml     # ConfigMap con variables de entrenamiento
+│   │       ├── pvc.yaml           # data-pvc y model-pvc
+│   │       ├── front-deployment.yaml
+│   │       ├── front-service.yaml
+│   │       └── drift-cronjob.yaml # CronJob horario de detección de deriva
+│   └── monitoring/
+│       ├── values-prometheus.yaml # kube-prometheus-stack (Prometheus+Grafana+Alertmanager)
+│       └── dira-rules.yaml        # PrometheusRule: 7 alertas operativas y de modelo
 ├── src/
 │   ├── backend/
 │   │   ├── data_ingestion.py
@@ -569,14 +690,18 @@ DIRA/
 │   │   ├── train.py               # + handler mlrun_train() para MLRun
 │   │   ├── mlrun_project.py       # orquestación del ciclo de vida
 │   │   ├── infer.py               # DIRAPredictor (cloudpickle)
-│   │   └── main_api.py            # FastAPI, protocolo Open Inference V2
-│   └── frontend/
-│       ├── index.html
-│       ├── css/styles.css
-│       └── js/
-│           ├── config.js          # const API_URL = '${API_URL}' (sustituido por envsubst)
-│           └── app.js
+│   │   └── main_api.py            # FastAPI, OIP V2, métricas Prometheus, log inferencias
+│   ├── frontend/
+│   │   ├── index.html
+│   │   ├── css/styles.css
+│   │   └── js/
+│   │       ├── config.js          # const API_URL = '${API_URL}' (sustituido por envsubst)
+│   │       └── app.js
+│   └── monitoring/
+│       ├── drift_check.py         # Evidently + Pushgateway + feedback loop (GitHub Actions)
+│       └── simulate_anomaly.py    # simulación de entorno anómalo
 ├── requirements_train.txt         # mlrun==1.10.0, xgboost-cpu, cloudpickle
-├── requirements_infer.txt         # fastapi, uvicorn, cloudpickle
+├── requirements_infer.txt         # fastapi, uvicorn, cloudpickle, prometheus-fastapi-instrumentator
+├── requirements_drift.txt         # evidently, prometheus-client, requests
 └── INSTALL.md                     # este archivo
 ```
