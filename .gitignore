@@ -225,3 +225,6 @@ project.yaml
 
 # ── DIRA: secrets de Helm (tokens, passwords — nunca subir al repo) ───────────
 helm/monitoring/values-secrets.yaml
+
+# ── DIRA: scripts de demo y pruebas locales ───────────────────────────────────
+src/monitoring/demo_drift_spike.sh

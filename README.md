@@ -28,7 +28,7 @@ Desarrollado en el marco del **Máster en Inteligencia Artificial de la UCLM** d
                     └──────┬─────────┬────────┘
                            │         │
               ┌────────────▼──┐  ┌───▼──────────────┐
-              │  LightGBM     │  │  inference_log   │
+              │  XGBoost      │  │  inference_log   │
               │  model.pkl    │  │  (model-pvc)     │
               └───────────────┘  └───────┬──────────┘
                                          │
@@ -77,7 +77,7 @@ Se compararon ~56 configuraciones (7 algoritmos × 8 estrategias de balanceo):
 
 **Balanceo:** SMOTE, SMOTE-NC, Random Under-Sampler, NearMiss-1/2/3
 
-**Modelo final:** LightGBM + Random Under-Sampler — mejor equilibrio rendimiento/eficiencia.
+**Modelo final:** XGBoost + `scale_pos_weight` — mejor equilibrio rendimiento/eficiencia.
 
 ### Entrenamiento en producción
 
@@ -250,7 +250,7 @@ python src/monitoring/simulate_anomaly.py \
 DIRA/
 ├── .github/workflows/ci-cd.yml        # CI/CD: build → push → deploy → train
 ├── docker/
-│   ├── train/Dockerfile               # dira-train  (Python 3.11, LightGBM)
+│   ├── train/Dockerfile               # dira-train  (Python 3.11, XGBoost)
 │   ├── infer/Dockerfile               # dira-infer  (FastAPI, prometheus-client)
 │   ├── front/Dockerfile               # dira-front  (Nginx + envsubst)
 │   └── drift/Dockerfile               # dira-drift  (Evidently AI)
@@ -313,7 +313,7 @@ DIRA/
 
 | Categoría | Tecnologías |
 |---|---|
-| ML / Data | Python, pandas, numpy, scikit-learn, LightGBM, XGBoost, CatBoost, imbalanced-learn, SHAP |
+| ML / Data | Python, pandas, numpy, scikit-learn, XGBoost, CatBoost, imbalanced-learn, SHAP |
 | Serving | FastAPI, prometheus-fastapi-instrumentator, KServe v2 |
 | MLOps | MLRun CE, Nuclio, Docker, Docker Hub, Helm, k3s |
 | CI/CD | GitHub Actions, self-hosted runner |
