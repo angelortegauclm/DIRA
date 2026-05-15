@@ -49,7 +49,7 @@ log = logging.getLogger(__name__)
 DATA_PATH          = os.getenv("DATA_PATH", "/model/reference_sample.csv")
 INFERENCE_LOG_PATH = os.getenv("INFERENCE_LOG_PATH", "/model/inference_log.csv")
 PUSHGATEWAY_URL    = os.getenv("PUSHGATEWAY_URL", "http://pushgateway-prometheus-pushgateway.monitoring.svc.cluster.local:9091")
-DRIFT_THRESHOLD    = float(os.getenv("DRIFT_THRESHOLD", "0.20"))
+DRIFT_THRESHOLD    = float(os.getenv("DRIFT_THRESHOLD", "0.30"))
 GITHUB_TOKEN       = os.getenv("GITHUB_TOKEN", "")
 GITHUB_REPO        = os.getenv("GITHUB_REPO", "")
 GITHUB_BRANCH      = os.getenv("GITHUB_BRANCH", "main")
@@ -154,13 +154,12 @@ def run_drift_report(reference: pd.DataFrame, current: pd.DataFrame) -> tuple[fl
     # El score global está en el primer metric del resultado
     drift_score = result["metrics"][0]["result"]["share_of_drifted_columns"]
 
-    # Los scores por columna están a partir del tercer metric (index 2+)
-    # porque el índice 1 contiene el resumen del DataDriftPreset
-    drift_by_col = {}
-    for metric in result["metrics"][2:]:
-        res = metric.get("result", {})
-        if "column_name" in res:
-            drift_by_col[res["column_name"]] = float(res.get("drift_score", 0.0))
+    # Los scores por columna están en metrics[2]["result"]["drift_by_columns"],
+    # un dict {nombre_columna: {drift_score, drift_detected, ...}}
+    drift_by_col = {
+        col: float(data.get("drift_score", 0.0))
+        for col, data in result["metrics"][2]["result"]["drift_by_columns"].items()
+    }
 
     return drift_score, drift_by_col
 
