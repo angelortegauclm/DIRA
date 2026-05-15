@@ -1,232 +1,245 @@
 # DIRA — Diabetes Intelligent Risk Assessment
 
-DIRA (Diabetes Intelligent Risk Assessment) es un proyecto de inteligencia artificial orientado a la **estimación temprana del riesgo de diabetes tipo 2** mediante técnicas de aprendizaje automático aplicadas a indicadores de salud poblacional.
+DIRA es un sistema MLOps de producción para la **estimación temprana del riesgo de diabetes tipo 2** mediante aprendizaje automático aplicado a indicadores de salud poblacional.
 
-El objetivo del sistema no es realizar un diagnóstico médico, sino **apoyar la identificación de perfiles de riesgo en población adulta**, permitiendo priorizar estrategias preventivas y mejorar la toma de decisiones en contextos sanitarios.
+El objetivo no es realizar un diagnóstico médico sino **apoyar la identificación de perfiles de riesgo en población adulta**, permitiendo priorizar estrategias preventivas. Incluye un pipeline completo de entrenamiento, despliegue, monitorización y reentrenamiento automático.
 
-Este proyecto se desarrolla en el marco del **Máster en Inteligencia Artificial de la Universidad de Castilla-La Mancha (UCLM)** dentro de la asignatura *Desarrollo e Integración de Servicios de IA*.
+Desarrollado en el marco del **Máster en Inteligencia Artificial de la UCLM** dentro de la asignatura *Desarrollo e Integración de Servicios de IA*.
 
 ---
 
-## Problema que aborda el proyecto
+## Arquitectura general
 
-La diabetes tipo 2 constituye uno de los principales desafíos sanitarios actuales debido a su elevada prevalencia, su evolución progresiva y el impacto que genera en los sistemas de salud.
-
-En muchos casos, la enfermedad se desarrolla durante años sin síntomas evidentes, lo que dificulta su detección temprana. Esta situación hace especialmente relevante la identificación de **personas con mayor probabilidad de desarrollar diabetes antes de que aparezcan manifestaciones clínicas claras**.
-
-En este contexto, el proyecto DIRA explora cómo un sistema de inteligencia artificial puede analizar variables relacionadas con:
-
-- hábitos de vida  
-- estado general de salud  
-- antecedentes médicos  
-- características demográficas  
-
-para **estimar el riesgo individual de diabetes o prediabetes** y apoyar estrategias de prevención.
+```
+                        ┌─────────────────┐
+                        │  Usuario final  │
+                        │  Navegador web  │
+                        └────────┬────────┘
+                                 │
+                    ┌────────────▼────────────┐
+                    │   Frontend Nginx        │
+                    │   :30100                │
+                    └────────────┬────────────┘
+                                 │ HTTP
+                    ┌────────────▼────────────┐
+                    │   API FastAPI (Nuclio)   │
+                    │   KServe v2 · :31995    │
+                    │   /metrics · /infer     │
+                    └──────┬─────────┬────────┘
+                           │         │
+              ┌────────────▼──┐  ┌───▼──────────────┐
+              │  LightGBM     │  │  inference_log   │
+              │  model.pkl    │  │  (model-pvc)     │
+              └───────────────┘  └───────┬──────────┘
+                                         │
+                              ┌──────────▼──────────┐
+                              │  CronJob drift      │
+                              │  Evidently AI       │
+                              │  cada 5 min         │
+                              └──────────┬──────────┘
+                                         │ push métricas
+                    ┌────────────────────▼────────────────────┐
+                    │              Prometheus                  │
+                    │   scrape · alertas · series temporales  │
+                    └──────────┬──────────────┬───────────────┘
+                               │              │
+              ┌────────────────▼──┐    ┌──────▼──────────┐
+              │    Grafana        │    │  Alertmanager   │
+              │    Dashboards     │    │  → Telegram     │
+              └───────────────────┘    └─────────────────┘
+```
 
 ---
 
 ## Dataset
 
-El proyecto utiliza el **Diabetes Health Indicators Dataset**, derivado del sistema epidemiológico estadounidense **BRFSS (Behavioral Risk Factor Surveillance System)**.
+**Diabetes Health Indicators Dataset** — BRFSS (Behavioral Risk Factor Surveillance System), EE.UU. 2015.
 
-Características principales del dataset:
-
-- **253.680 registros**
-- **21 variables predictoras**
-- **1 variable objetivo**: `Diabetes_binary` (0 = sin diabetes/prediabetes, 1 = diabetes/prediabetes)
-
-El conjunto de datos presenta un **importante desbalanceo de clases** (~14,5% positivo vs ~85,5% negativo), lo que condiciona tanto el preprocesamiento como la evaluación del modelo.
-
-El conjunto de datos incluye indicadores relacionados con:
-
-- índice de masa corporal  
-- hipertensión  
-- colesterol elevado  
-- actividad física  
-- hábitos alimentarios  
-- consumo de alcohol y tabaco  
-- percepción del estado de salud  
-- variables sociodemográficas  
-
-Estos indicadores permiten capturar distintas dimensiones del riesgo metabólico en población adulta.
-
----
-
-## Variables relevantes
-
-Entre los factores analizados destacan:
-
-- **BMI** — Índice de masa corporal  
-- **HighBP** — Hipertensión  
-- **HighChol** — Colesterol elevado  
-- **PhysActivity** — Actividad física  
-- **Fruits / Veggies** — Consumo de frutas y verduras  
-- **Stroke** — Antecedente de ictus  
-- **HeartDiseaseorAttack** — Enfermedad cardiovascular previa  
-- **GenHlth** — Percepción del estado de salud  
-- **DiffWalk** — Dificultad para caminar  
-- **Age** — Grupo de edad  
-
----
-
-## Enfoque del modelo
-
-El problema se plantea como una **tarea de clasificación binaria** en la que el sistema debe distinguir entre:
-
-- individuos sin diagnóstico de diabetes  
-- individuos con prediabetes o diabetes  
-
-El pipeline de machine learning incluye:
-
-1. Exploración de datos (EDA)
-2. Preprocesamiento del dataset y tratamiento del desbalanceo de clases
-3. División en conjunto de entrenamiento y prueba (80/20 estratificado)
-4. Entrenamiento y comparación de modelos supervisados
-5. Evaluación del rendimiento
-6. Interpretación del modelo mediante XAI
-
-### Modelos evaluados
-
-Se han comparado los siguientes algoritmos bajo distintas técnicas de balanceo de datos:
-
-- Logistic Regression
-- Ridge Classifier
-- Random Forest Classifier
-- Balanced Random Forest Classifier
-- XGBoost
-- LightGBM
-- CatBoost
-
-### Técnicas de balanceo de clases
-
-Para compensar el desbalanceo del dataset se han evaluado seis estrategias:
-
-- **SMOTE** — sobremuestreo sintético de la clase minoritaria
-- **SMOTE-NC** — variante de SMOTE que respeta variables categóricas y ordinales
-- **Random Under-Sampler (RUS)** — submuestreo aleatorio de la clase mayoritaria
-- **NearMiss-1, NearMiss-2, NearMiss-3** — submuestreo inteligente basado en distancias
-
-### Modelo seleccionado
-
-Tras comparar ~56 configuraciones (7 modelos × 8 datasets), el **modelo final seleccionado es LightGBM entrenado con el dataset balanceado mediante RUS**, por ofrecer el mejor equilibrio entre rendimiento y eficiencia computacional.
-
-El modelo se ha guardado en `model/modelo_diabetes_DIRA.pkl` y está listo para su uso en producción.
-
----
-
-## Interpretabilidad del modelo (Explainable AI)
-
-En aplicaciones sanitarias no basta con obtener predicciones precisas. También es necesario comprender **por qué el modelo toma determinadas decisiones**.
-
-Por este motivo se incorpora la técnica de **Explainable Artificial Intelligence (XAI)**:
-
-### SHAP (SHapley Additive Explanations)
-
-Permite analizar la contribución de cada variable al resultado del modelo mediante valores de Shapley procedentes de la teoría de juegos.
-
-Se utiliza `TreeExplainer` optimizado para modelos de gradient boosting y genera:
-
-- **Summary plot** — impacto medio de cada variable sobre las predicciones
-- **Force plot** — explicación de predicciones individuales
-- **Dependence plots** — análisis de interacciones entre variables (e.g., BMI × GenHlth)
-
-Esto facilita:
-
-- comprender qué variables influyen más en el modelo
-- identificar patrones de riesgo
-- interpretar el comportamiento global del sistema
-
----
-
-## Referencia clínica: FINDRISC
-
-Para contextualizar el rendimiento del modelo se utiliza como referencia conceptual el cuestionario **FINDRISC (Finnish Diabetes Risk Score)**, una herramienta ampliamente utilizada en Europa para estimar el riesgo de diabetes tipo 2.
-
-DIRA analiza si los modelos de aprendizaje automático pueden **identificar patrones más complejos de riesgo** que los sistemas tradicionales basados en puntuación, aprovechando la mayor dimensionalidad del dataset BRFSS.
-
----
-
-## Evaluación del modelo
-
-Debido al desbalanceo del dataset, la evaluación del modelo no se basa únicamente en accuracy.
-
-Se utilizan métricas más representativas:
-
-- **F1-score**
-- **Precision**
-- **Recall (sensibilidad)**
-- **Matriz de confusión**
-- **Curva ROC y AUC**
-- **Curva Precision-Recall**
-
-Estas métricas permiten evaluar la capacidad del modelo para identificar correctamente individuos con riesgo.
-
----
-
-## Interfaz web
-
-DIRA incluye una interfaz web desplegada como contenedor nginx que permite introducir los parámetros del paciente y obtener el resultado de forma visual:
-
-- Formulario con los 21 factores clínicos, de estilo de vida y demográficos
-- Resultado con código de color: verde (riesgo < 30%), naranja (30–70%), rojo (> 70%)
-- Desplegada como contenedor en k3s, accesible en `http://<node-ip>:30100`
-
----
-
-## Infraestructura MLOps
-
-El sistema completo se despliega en un clúster Kubernetes ligero mediante:
-
-| Componente | Rol |
+| Característica | Valor |
 |---|---|
-| **k3s** | Clúster Kubernetes local |
-| **Helm** | Gestión del despliegue (ConfigMaps, PVCs, frontend, CronJobs) |
-| **MLRun CE** | Ciclo de vida del modelo: Jobs, Model Registry, Serving |
-| **Nuclio** | Runtime serverless para la función de inferencia |
-| **FastAPI** | API de inferencia (protocolo Open Inference V2) |
-| **nginx** | Servidor del frontend web |
-| **Docker Hub** | Registro de imágenes |
-| **GitHub Actions** | CI/CD: build → push → despliegue → entrenamiento |
-| **Prometheus** | Recogida de métricas operativas y de modelo |
-| **Grafana** | Dashboards de métricas operativas y deriva de datos |
-| **Alertmanager** | Enrutamiento de alertas con notificaciones por Telegram |
-| **Evidently AI** | Detección de deriva de datos en inferencias recientes |
+| Registros | 253.680 |
+| Variables predictoras | 21 |
+| Variable objetivo | `Diabetes_binary` (0/1) |
+| Prevalencia de diabetes | ~13.9% |
+| Desbalanceo | ~86% negativo / ~14% positivo |
 
-El pipeline CI/CD detecta cambios en el código del modelo y lanza automáticamente un nuevo ciclo de entrenamiento y despliegue sin intervención manual.
+Las 21 variables cubren: IMC, hipertensión, colesterol, actividad física, alimentación, alcohol, tabaco, historial cardiovascular, salud mental/física percibida, dificultad para caminar, sexo, edad, educación e ingresos.
 
 ---
 
-## Monitorización y observabilidad
+## Modelo
 
-El sistema incluye una capa de observabilidad completa desplegada en el namespace `monitoring`:
+### Selección
 
-**Métricas operativas** (recogidas por Prometheus desde `/metrics` del pod de inferencia):
-- Peticiones por segundo y por minuto, latencia HTTP
-- Tasa de errores 5xx
-- Uso de CPU y memoria del pod
+Se compararon ~56 configuraciones (7 algoritmos × 8 estrategias de balanceo):
 
-**Métricas del modelo** (contadores y distribuciones registradas en la propia API):
-- `dira_predictions_total` — contador de predicciones por nivel de riesgo (BAJO / MODERADO / ALTO)
-- `dira_prediction_probability` — histograma de probabilidades predichas
-- `dira_model_loaded` — indicador de modelo cargado en memoria
+**Algoritmos:** Logistic Regression, Ridge, Random Forest, Balanced Random Forest, XGBoost, LightGBM, CatBoost
 
-**Detección de deriva de datos** (CronJob horario con Evidently AI):
-- Compara la distribución de las inferencias recientes contra el dataset de entrenamiento
-- Empuja el score de drift a Prometheus Pushgateway
-- Si el score supera el umbral (0.20), dispara automáticamente un reentrenamiento vía GitHub Actions
+**Balanceo:** SMOTE, SMOTE-NC, Random Under-Sampler, NearMiss-1/2/3
 
-**Alertas** (Alertmanager → Telegram):
-- `DiraInferHighCPU` / `DiraInferHighMemory` — recursos operativos
-- `DiraInferHighErrorRate` / `DiraInferDown` — disponibilidad del servicio
-- `DiraDataDriftDetected` — deriva de datos detectada
-- `DiraHighRiskSurge` — incremento anómalo de predicciones de alto riesgo
-- `DiraModelNotLoaded` — modelo no cargado en memoria
+**Modelo final:** LightGBM + Random Under-Sampler — mejor equilibrio rendimiento/eficiencia.
 
-**Simulación de entorno anómalo**:
+### Entrenamiento en producción
+
+```
+train.py
+  ├── RandomizedSearchCV (25 iter, 5-fold estratificado)
+  ├── Guarda modelo_diabetes_DIRA.pkl en model-pvc
+  ├── Guarda reference_sample.csv (5.000 filas) para drift detection
+  └── Registra métricas y artefactos en MLRun Model Registry
+```
+
+### Clasificación de riesgo
+
+| Probabilidad | Nivel | Color |
+|---|---|---|
+| < 0.30 | BAJO RIESGO | Verde |
+| 0.30 – 0.70 | RIESGO MODERADO | Amarillo |
+| > 0.70 | ALTO RIESGO | Rojo |
+
+### Interpretabilidad (XAI)
+
+Se usa **SHAP** (`TreeExplainer`) para explicar las predicciones:
+- Summary plot — variables más influyentes globalmente
+- Force plot — explicación de predicciones individuales
+- Dependence plots — interacciones entre variables (e.g., BMI × GenHlth)
+
+---
+
+## Infraestructura
+
+Desplegado en **k3s single-node** con Helm. Nodo: `192.168.1.131`.
+
+| Componente | Tecnología | Namespace |
+|---|---|---|
+| Frontend web | Nginx | `dira` |
+| API de inferencia | FastAPI + Nuclio | `mlrun` |
+| Entrenamiento | MLRun Jobs | `mlrun` |
+| Drift detection | CronJob (Evidently) | `mlrun` |
+| Métricas | Prometheus + Pushgateway | `monitoring` |
+| Dashboards | Grafana | `monitoring` |
+| Alertas | Alertmanager → Telegram | `monitoring` |
+| CI/CD | GitHub Actions (self-hosted) | — |
+
+### Volúmenes persistentes
+
+| PVC | Tamaño | Contenido |
+|---|---|---|
+| `data-pvc` | 1 Gi | Dataset CSV BRFSS |
+| `model-pvc` | 500 Mi | `modelo_diabetes_DIRA.pkl`, `inference_log.csv`, `reference_sample.csv` |
+
+---
+
+## CI/CD
+
+Pipeline en **GitHub Actions** con runner self-hosted en el mismo nodo k3s.
+
+```
+Push a main ──► Job 1: Build & Push
+                  ├── dira-train:latest + :<sha>
+                  ├── dira-infer:latest + :<sha>
+                  └── dira-front:latest + :<sha>
+
+             ──► Job 2: Deploy to k3s
+                  ├── Sincroniza DIRA_GH_PAT → Secret Kubernetes
+                  ├── Importa imágenes en containerd (k3s no usa Docker)
+                  ├── helm upgrade dira
+                  └── Si cambia train.py/features.py:
+                        ├── MLRun lanza job de entrenamiento
+                        └── Health check API de inferencia
+```
+
+**Secrets necesarios en GitHub:**
+
+| Secret | Valor |
+|---|---|
+| `DOCKERHUB_USERNAME` | Usuario Docker Hub |
+| `DOCKERHUB_TOKEN` | Token Docker Hub |
+| `MLRUN_DBPATH` | URL interna del API MLRun |
+| `DIRA_GH_PAT` | PAT con scope `workflow` (feedback loop) |
+
+---
+
+## Monitorización
+
+### Métricas recogidas
+
+| Fuente | Métricas |
+|---|---|
+| API inferencia (scrape directo) | `http_requests_total`, `http_request_duration_*`, `dira_predictions_total`, `dira_model_loaded`, `dira_prediction_probability` |
+| Pushgateway (drift CronJob) | `dira_data_drift_score`, `dira_column_drift_score{column}` |
+| kube-state-metrics | `container_cpu_usage_seconds_total`, `container_memory_working_set_bytes` |
+
+### Dashboard Grafana
+
+5 secciones en `http://192.168.1.131:30030` (admin / *ver values-secrets.yaml*):
+
+1. **Resumen del sistema** — modelo cargado, peticiones/min, latencia P95, score drift
+2. **Tráfico HTTP** — peticiones por estado, latencia P50/P95/P99
+3. **Predicciones del modelo** — totales y tasa por nivel de riesgo
+4. **Deriva de datos** — evolución temporal del score + top 10 columnas derivadas
+5. **Recursos del pod** — CPU y memoria de dira-infer
+
+### Alertas (Alertmanager → Telegram)
+
+| Grupo | Alerta | Condición |
+|---|---|---|
+| Disponibilidad | `DiraInferDown` | Pod caído > 2 min |
+| Disponibilidad | `DiraModelNotLoaded` | Modelo sin cargar > 2 min |
+| Calidad HTTP | `DiraInferHighErrorRate` | > 5% errores 5xx en 5 min |
+| Calidad HTTP | `DiraInferHighLatency` | P95 > 500 ms en 5 min |
+| Recursos | `DiraInferHighCPU` | > 80% CPU en 5 min |
+| Recursos | `DiraInferHighMemory` | > 700 MB RAM en 5 min |
+| Modelo | `DiraDriftNormalizado` | Drift < 20% estable 10 min → `ℹ️` |
+| Modelo | `DiraDataDriftWarning` | Drift 20–30% → `🚨 warning` |
+| Modelo | `DiraDataDriftCritical` | Drift > 30% → `🚨 critical` + reentrenamiento |
+| Modelo | `DiraHighRiskSurge` | > 50% predicciones alto riesgo en 10 min |
+
+---
+
+## Detección de deriva y feedback loop
+
+El CronJob `dira-drift-check` se ejecuta cada hora (configurable):
+
+```
+1. Carga reference_sample.csv — 5.000 filas del último entrenamiento
+2. Carga las últimas 500 inferencias de inference_log.csv (ventana 24h)
+3. Evidently AI compara distribuciones columna a columna:
+   • Variables continuas   → test Kolmogorov-Smirnov
+   • Variables categóricas → test Chi-cuadrado
+4. Empuja métricas al Pushgateway:
+   • dira_data_drift_score          (score global 0.0–1.0)
+   • dira_column_drift_score{column} (score por variable)
+5. Si drift_score > 0.30:
+   → workflow_dispatch en GitHub Actions → reentrenamiento automático
+```
+
+**Umbrales de deriva:**
+
+| Score | Significado | Acción |
+|---|---|---|
+| < 20% | Normal | Ninguna |
+| 20–30% | Deriva leve | Alerta warning, vigilar |
+| > 30% | Deriva crítica | Alerta critical + reentrenamiento |
+
+---
+
+## Herramientas de prueba
 
 ```bash
+# Tráfico realista (distribuciones BRFSS reales) — drift score < 20%
+python src/monitoring/traffic_generator.py \
+  --url http://192.168.1.131:31995 \
+  --mode production --duration 0 --rps 2
+
+# Tráfico sintético con perfiles extremos — drift score ~66%
+python src/monitoring/traffic_generator.py \
+  --url http://192.168.1.131:31995 \
+  --mode synthetic --duration 300 --rps 3 --mix 60:25:15
+
+# Inyección de deriva artificial para validar el pipeline completo
 python src/monitoring/simulate_anomaly.py \
-  --url http://<node-ip>:<port> --n 200
+  --url http://192.168.1.131:31995 --duration 120
 ```
 
 ---
@@ -235,59 +248,75 @@ python src/monitoring/simulate_anomaly.py \
 
 ```
 DIRA/
-├── .github/workflows/ci-cd.yml   # CI/CD: build → Docker Hub → k3s → MLRun
+├── .github/workflows/ci-cd.yml        # CI/CD: build → push → deploy → train
 ├── docker/
-│   ├── train/Dockerfile           # imagen dira-train (Python 3.11)
-│   ├── infer/Dockerfile           # imagen dira-infer (Python 3.11, FastAPI + /metrics)
-│   ├── front/Dockerfile           # imagen dira-front (nginx)
-│   └── drift/Dockerfile           # imagen dira-drift (Evidently AI)
+│   ├── train/Dockerfile               # dira-train  (Python 3.11, LightGBM)
+│   ├── infer/Dockerfile               # dira-infer  (FastAPI, prometheus-client)
+│   ├── front/Dockerfile               # dira-front  (Nginx + envsubst)
+│   └── drift/Dockerfile               # dira-drift  (Evidently AI)
 ├── helm/
-│   ├── dira/                      # chart DIRA: ConfigMap, PVCs, frontend, drift CronJob
+│   ├── dira/
+│   │   ├── Chart.yaml
+│   │   ├── values.yaml                # Parámetros del chart
+│   │   └── templates/
+│   │       ├── configmap.yaml         # Variables de entorno del modelo
+│   │       ├── pvc.yaml               # data-pvc y model-pvc
+│   │       ├── front-deployment.yaml  # Deployment del frontend
+│   │       ├── front-service.yaml     # NodePort :30100
+│   │       └── drift-cronjob.yaml     # CronJob de drift en namespace mlrun
 │   └── monitoring/
-│       ├── values-prometheus.yaml # kube-prometheus-stack (Prometheus+Grafana+Alertmanager)
-│       └── dira-rules.yaml        # PrometheusRule con 7 reglas de alerta
+│       ├── values-prometheus.yaml     # kube-prometheus-stack completo
+│       ├── values-secrets.yaml        # Credenciales (gitignoreado)
+│       ├── values-secrets.yaml.example
+│       ├── dira-rules.yaml            # PrometheusRule — 10 alertas
+│       └── grafana-dashboard-dira.yaml # ConfigMap con dashboard JSON
 ├── src/
 │   ├── backend/
-│   │   ├── data_ingestion.py
-│   │   ├── features.py
-│   │   ├── train.py
-│   │   ├── mlrun_project.py
-│   │   ├── infer.py
-│   │   └── main_api.py            # + métricas Prometheus + log de inferencias
+│   │   ├── features.py                # Definición de las 21 variables
+│   │   ├── data_ingestion.py          # Carga y preprocesamiento del dataset
+│   │   ├── train.py                   # Entrenamiento + MLRun + reference_sample
+│   │   ├── infer.py                   # Lógica de predicción y log
+│   │   ├── main_api.py                # FastAPI KServe v2 + métricas Prometheus
+│   │   └── mlrun_project.py           # Orquestación MLRun (train + deploy)
 │   ├── frontend/
 │   │   ├── index.html
 │   │   ├── css/styles.css
 │   │   └── js/
-│   │       ├── config.js
-│   │       └── app.js
+│   │       ├── config.js              # API_URL (sustituido por envsubst)
+│   │       └── app.js                 # Formulario + llamada API + resultado
 │   └── monitoring/
-│       ├── drift_check.py         # Evidently + Pushgateway + feedback loop
-│       └── simulate_anomaly.py    # simulación de entorno anómalo
+│       ├── drift_check.py             # Evidently + Pushgateway + feedback loop
+│       ├── traffic_generator.py       # Generador de tráfico (modo production/synthetic)
+│       └── simulate_anomaly.py        # Inyección de deriva artificial
 ├── requirements_train.txt
 ├── requirements_infer.txt
-└── requirements_drift.txt
+├── requirements_drift.txt
+├── INSTALL.md                         # Guía de instalación paso a paso
+└── DIRA.ipynb                         # Notebook EDA + comparación de modelos
 ```
 
 ---
 
-## Tecnologías utilizadas
+## URLs de acceso
 
-El proyecto ha sido desarrollado en **Python** utilizando las siguientes librerías:
+| Servicio | URL | Credenciales |
+|---|---|---|
+| Frontend | `http://192.168.1.131:30100` | — |
+| API inferencia | `http://192.168.1.131:31995` | — |
+| Grafana | `http://192.168.1.131:30030` | admin / *values-secrets.yaml* |
+| Prometheus | `http://192.168.1.131:30091` | — |
+| Alertmanager | `http://192.168.1.131:30093` | — |
 
-- pandas  
-- numpy  
-- scipy  
-- matplotlib  
-- seaborn  
-- plotly  
-- scikit-learn  
-- imbalanced-learn  
-- xgboost  
-- lightgbm  
-- catboost  
-- shap  
-- dython  
-- cloudpickle  
-- evidently  
-- prometheus-client  
-- prometheus-fastapi-instrumentator  
+---
+
+## Tecnologías
+
+| Categoría | Tecnologías |
+|---|---|
+| ML / Data | Python, pandas, numpy, scikit-learn, LightGBM, XGBoost, CatBoost, imbalanced-learn, SHAP |
+| Serving | FastAPI, prometheus-fastapi-instrumentator, KServe v2 |
+| MLOps | MLRun CE, Nuclio, Docker, Docker Hub, Helm, k3s |
+| CI/CD | GitHub Actions, self-hosted runner |
+| Monitorización | Prometheus, Grafana, Alertmanager, Prometheus Pushgateway |
+| Drift detection | Evidently AI, prometheus-client |
+| Infraestructura | Kubernetes (k3s), Nginx, containerd |
