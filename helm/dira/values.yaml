@@ -38,8 +38,6 @@ monitoring:
   # Al ser un proceso batch de vida corta, no puede exponer /metrics directamente.
   pushgatewayUrl: "http://pushgateway-prometheus-pushgateway.monitoring.svc.cluster.local:9091"
   driftThreshold: "0.30"               # Si share_of_drifted_columns > 0.30 se dispara reentrenamiento
-  githubRepo:     "angelortegauclm/DIRA"         # Repositorio para el workflow_dispatch de reentrenamiento
-  githubBranch:   "main"                          # Rama sobre la que se lanza el CI/CD
 
 # ── Volúmenes persistentes ────────────────────────────────────────────────────
 # PVCs gestionados en templates/pvc.yaml y montados por train e infer.

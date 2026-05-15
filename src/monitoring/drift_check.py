@@ -18,15 +18,22 @@ Variables de entorno:
   DATA_PATH           Ruta al CSV de referencia (muestra del dataset de entrenamiento)
   INFERENCE_LOG_PATH  Ruta al CSV de log de inferencias generado por main_api.py
   PUSHGATEWAY_URL     URL del Prometheus Pushgateway
-  DRIFT_THRESHOLD     Umbral de drift para disparar reentrenamiento (default: 0.20)
-  GITHUB_TOKEN        PAT de GitHub con scope 'workflow' (feedback loop)
-  GITHUB_REPO         Repositorio en formato usuario/repo
-  GITHUB_BRANCH       Rama objetivo para workflow_dispatch (default: main)
+  DRIFT_THRESHOLD     Umbral de drift para disparar reentrenamiento (default: 0.30)
+  MLRUN_DBPATH        URL interna del API de MLRun
+  MLRUN_PROJECT       Nombre del proyecto MLRun (default: diraproject)
+  MLRUN_FUNCTION      Nombre de la función de entrenamiento registrada (default: dira-train)
+  DATA_DIR            Directorio del dataset de entrenamiento (default: /data)
+  DATA_FILENAME       Nombre del CSV del dataset (default: diabetes_binary_health_indicators_BRFSS2015.csv)
+  MODEL_PATH          Ruta donde se guarda el modelo (default: /model/modelo_diabetes_DIRA.pkl)
+  RANDOM_STATE        Semilla aleatoria (default: 42)
+  N_ITER              Iteraciones de RandomizedSearchCV (default: 25)
+  CV_FOLDS            Folds de validación cruzada (default: 5)
   MIN_SAMPLES         Mínimo de muestras recientes para ejecutar el análisis (default: 50)
 """
 
 import os
 import sys
+import uuid
 import logging
 import requests
 import pandas as pd
@@ -50,10 +57,20 @@ DATA_PATH          = os.getenv("DATA_PATH", "/model/reference_sample.csv")
 INFERENCE_LOG_PATH = os.getenv("INFERENCE_LOG_PATH", "/model/inference_log.csv")
 PUSHGATEWAY_URL    = os.getenv("PUSHGATEWAY_URL", "http://pushgateway-prometheus-pushgateway.monitoring.svc.cluster.local:9091")
 DRIFT_THRESHOLD    = float(os.getenv("DRIFT_THRESHOLD", "0.30"))
-GITHUB_TOKEN       = os.getenv("GITHUB_TOKEN", "")
-GITHUB_REPO        = os.getenv("GITHUB_REPO", "")
-GITHUB_BRANCH      = os.getenv("GITHUB_BRANCH", "main")
 MIN_SAMPLES        = int(os.getenv("MIN_SAMPLES", "50"))
+
+# ── MLRun (reentrenamiento automático) ────────────────────────────────────────
+MLRUN_DBPATH       = os.getenv("MLRUN_DBPATH", "http://mlrun-api.mlrun.svc.cluster.local:8080")
+MLRUN_PROJECT      = os.getenv("MLRUN_PROJECT", "diraproject")
+MLRUN_FUNCTION     = os.getenv("MLRUN_FUNCTION", "dira-train")
+
+# Parámetros que se pasan al job de entrenamiento — deben coincidir con los
+# que usa mlrun_project.py para que el modelo resultante sea equivalente.
+TRAIN_DATA_PATH    = os.getenv("DATA_DIR", "/data") + "/" + os.getenv("DATA_FILENAME", "diabetes_binary_health_indicators_BRFSS2015.csv")
+TRAIN_MODEL_PATH   = os.getenv("MODEL_PATH", "/model/modelo_diabetes_DIRA.pkl")
+TRAIN_RANDOM_STATE = int(os.getenv("RANDOM_STATE", "42"))
+TRAIN_N_ITER       = int(os.getenv("N_ITER", "25"))
+TRAIN_CV_FOLDS     = int(os.getenv("CV_FOLDS", "5"))
 
 # ── Columnas del modelo ───────────────────────────────────────────────────────
 # Las 21 variables clínicas que recibe el modelo como entrada.
@@ -200,41 +217,54 @@ def push_metrics(drift_score: float, drift_by_col: dict) -> None:
         log.error(f"Error empujando métricas: {exc}")
 
 
-def trigger_retraining() -> None:
+def trigger_retraining(drift_score: float) -> None:
     """
-    Dispara un reentrenamiento automático vía GitHub Actions workflow_dispatch.
+    Dispara un reentrenamiento automático vía la API REST de MLRun.
 
-    En lugar de ejecutar el reentrenamiento directamente desde este contenedor
-    (lo que requeriría meter todo el stack de MLRun + LightGBM en la imagen
-    de drift, triplicando su tamaño), se llama a la API de GitHub para
-    activar el workflow de CI/CD existente con el input run_training=true.
+    Llama directamente al endpoint /api/v1/submit_job del servidor MLRun
+    para lanzar el job 'dira-train' ya registrado en el proyecto 'diraproject'.
+    El job corre como Kubernetes Job en k3s con los mismos PVCs que en el
+    pipeline normal — no requiere GitHub ni CI/CD.
 
-    Esto reutiliza el pipeline de entrenamiento ya probado y mantiene la
-    imagen de drift ligera (~270 MB frente a ~1.4 GB del contenedor de train).
-
-    Requiere un Personal Access Token (PAT) con scope 'workflow' almacenado
-    en el Secret de Kubernetes 'dira-github-secret'.
+    La imagen de drift se mantiene ligera (~270 MB) porque usa solo requests,
+    sin necesidad de instalar el SDK de mlrun (~500 MB extra).
     """
-    if not GITHUB_TOKEN or not GITHUB_REPO:
-        log.warning("GITHUB_TOKEN / GITHUB_REPO no configurados. Reentrenamiento no disparado.")
-        return
+    url = f"{MLRUN_DBPATH.rstrip('/')}/api/v1/submit_job"
 
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/actions/workflows/ci-cd.yml/dispatches"
-    resp = requests.post(
-        url,
-        headers={
-            "Authorization": f"Bearer {GITHUB_TOKEN}",
-            "Accept": "application/vnd.github.v3+json",
-        },
-        # workflow_dispatch requiere ref (rama) e inputs definidos en el YAML del workflow
-        json={"ref": GITHUB_BRANCH, "inputs": {"run_training": "true"}},
-        timeout=10,
-    )
-    if resp.status_code == 204:
-        # 204 No Content es la respuesta correcta de GitHub para workflow_dispatch
-        log.info("Reentrenamiento disparado vía GitHub Actions workflow_dispatch.")
-    else:
-        log.error(f"Error disparando reentrenamiento: HTTP {resp.status_code} – {resp.text}")
+    payload = {
+        "task": {
+            "kind": "run",
+            "metadata": {
+                "uid": str(uuid.uuid4()),
+                "name": "drift-triggered-retraining",
+                "project": MLRUN_PROJECT,
+                "labels": {"triggered_by": "drift_check", "drift_score": f"{drift_score:.4f}"},
+            },
+            "spec": {
+                "function": f"{MLRUN_PROJECT}/{MLRUN_FUNCTION}",
+                "handler": "mlrun_train",
+                "parameters": {
+                    "data_path":    TRAIN_DATA_PATH,
+                    "model_path":   TRAIN_MODEL_PATH,
+                    "random_state": TRAIN_RANDOM_STATE,
+                    "n_iter":       TRAIN_N_ITER,
+                    "cv_folds":     TRAIN_CV_FOLDS,
+                },
+                "output_path": "/model/mlrun-artifacts",
+            },
+            "status": {"state": "created"},
+        }
+    }
+
+    try:
+        resp = requests.post(url, json=payload, timeout=30)
+        if resp.status_code in (200, 202):
+            run_uid = resp.json().get("data", {}).get("metadata", {}).get("uid", "?")
+            log.info(f"Reentrenamiento lanzado via MLRun. Run UID: {run_uid}")
+        else:
+            log.error(f"Error lanzando reentrenamiento via MLRun: HTTP {resp.status_code} – {resp.text}")
+    except Exception as exc:
+        log.error(f"Excepción al contactar MLRun API: {exc}")
 
 
 # ── Punto de entrada ──────────────────────────────────────────────────────────
@@ -270,6 +300,6 @@ if __name__ == "__main__":
     # Paso 5: feedback loop — si hay deriva significativa, reentrenar el modelo
     if drift_score > DRIFT_THRESHOLD:
         log.warning(f"Drift {drift_score:.4f} > umbral {DRIFT_THRESHOLD}. Disparando reentrenamiento...")
-        trigger_retraining()
+        trigger_retraining(drift_score)
 
     log.info("=== Análisis completado ===")

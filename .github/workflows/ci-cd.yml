@@ -22,7 +22,7 @@ jobs:
   # Las imágenes se etiquetan con el SHA del commit (inmutable) y 'latest' (alias).
   build:
     name: Build & Push Docker Hub
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
 
     steps:
       - name: Checkout
