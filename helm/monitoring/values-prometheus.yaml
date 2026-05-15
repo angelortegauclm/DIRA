@@ -142,22 +142,35 @@ alertmanager:
           - bot_token: "CHANGEME"
             chat_id: 0
             parse_mode: HTML
-            # Plantilla del mensaje: muestra nombre, resumen y descripción de cada alerta
+            # Plantilla del mensaje:
+            #   🚨 alertas críticas/warning en FIRING
+            #   ✅ cualquier alerta en RESOLVED
+            #   ℹ️  alertas de severidad info (ej: DiraDriftNormalizado)
             message: |
-              🚨 <b>[{{ .Status | toUpper }}] DIRA – {{ .CommonLabels.alertname }}</b>
+              {{ if eq .Status "resolved" }}✅{{ else if eq .CommonLabels.severity "info" }}ℹ️{{ else }}🚨{{ end }} <b>[{{ .Status | toUpper }}] DIRA – {{ .CommonLabels.alertname }}</b>
               {{- range .Alerts }}
               📋 <b>{{ .Annotations.summary }}</b>
-              {{- if .Annotations.description }}
+              {{- if eq $.Status "resolved" }}
+              ✔️ La condición ha vuelto a niveles normales.
+              {{- else if .Annotations.description }}
               {{ .Annotations.description }}
               {{- end }}
               {{- end }}
 
     inhibit_rules:
-      # Si ya hay una alerta crítica del mismo tipo, suprimir las de warning
-      # para no saturar el canal de Telegram con duplicados de menor severidad
+      # Suprimir warning genérico si ya hay crítico del mismo tipo
       - source_matchers: [severity="critical"]
         target_matchers: [severity="warning"]
         equal: [alertname]
+      # Suprimir DiraDriftNormalizado mientras warning o crítico de drift estén activos.
+      # Evita recibir "todo correcto" al mismo tiempo que "hay problema".
+      - source_matchers: [alertname="DiraDataDriftWarning"]
+        target_matchers: [alertname="DiraDriftNormalizado"]
+      - source_matchers: [alertname="DiraDataDriftCritical"]
+        target_matchers: [alertname="DiraDriftNormalizado"]
+      # Suprimir DiraDataDriftWarning si ya hay crítico activo (evita duplicados)
+      - source_matchers: [alertname="DiraDataDriftCritical"]
+        target_matchers: [alertname="DiraDataDriftWarning"]
 
 # ── Node Exporter ─────────────────────────────────────────────────────────────
 # Deshabilitado porque MLRun CE ya despliega su propio node-exporter en el
@@ -170,3 +183,21 @@ nodeExporter:
 # Necesario para las alertas de CPU y memoria basadas en container_* metrics.
 kubeStateMetrics:
   enabled: true
+
+# ── Alertas de componentes de control plane ───────────────────────────────────
+# En k3s el scheduler, controller-manager y kube-proxy corren embebidos dentro
+# del binario k3s y no exponen los puertos de métricas que espera Prometheus.
+# Las alertas *Down de estos componentes son falsas alarmas en k3s — se
+# deshabilitan para no saturar el canal de Telegram con ruido irrelevante.
+kubeScheduler:
+  enabled: false
+
+kubeControllerManager:
+  enabled: false
+
+kubeProxy:
+  enabled: false
+
+# Etcd tampoco expone métricas externas en k3s (usa SQLite en lugar de etcd)
+kubeEtcd:
+  enabled: false

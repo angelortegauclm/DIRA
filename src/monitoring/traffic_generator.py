@@ -1,18 +1,24 @@
 """
 traffic_generator.py
 
-Genera tráfico continuo y variado hacia la API de inferencia de DIRA para
-poblar los dashboards de Prometheus y Grafana con datos realistas.
+Genera tráfico continuo hacia la API de inferencia de DIRA.
 
-Envía una mezcla configurable de perfiles BAJO / MODERADO / ALTO riesgo con
-valores aleatorios dentro de rangos clínicamente plausibles. El ritmo de
-envío varía en ondas senoidales para que las gráficas de tasa de peticiones
-muestren fluctuaciones naturales en lugar de una línea plana.
+Modos:
+  --mode production  (recomendado) Muestrea de las distribuciones reales del
+                     dataset BRFSS 2015. Produce un drift score bajo (<20%)
+                     porque los datos son estadísticamente similares a la
+                     referencia de entrenamiento. Simula uso real en producción.
+
+  --mode synthetic   Perfiles exagerados BAJO/MODERADO/ALTO con distribuciones
+                     extremas para probar alertas y detección de deriva.
+                     Produce drift ~66%. Útil para validar el pipeline.
 
 Uso:
   python src/monitoring/traffic_generator.py --url http://192.168.1.131:31995
   python src/monitoring/traffic_generator.py --url http://192.168.1.131:31995 \\
-      --duration 300 --rps 3 --mix 60:25:15
+      --mode production --duration 3600 --rps 2
+  python src/monitoring/traffic_generator.py --url http://192.168.1.131:31995 \\
+      --mode synthetic --duration 300 --rps 3 --mix 60:25:15
 """
 
 import argparse
@@ -112,6 +118,63 @@ def _perfil_alto_riesgo() -> list:
     ]
 
 
+def _perfil_produccion() -> list:
+    """
+    Muestrea de las distribuciones reales del dataset BRFSS 2015 (n=253.680).
+
+    Cada variable usa las proporciones exactas medidas en el dataset:
+      - Variables binarias: random.choices con los pesos reales
+      - BMI: normal(mean=28.4, std=5.5) truncada en [12, 98]
+      - MentHlth/PhysHlth: distribución zero-inflated (mediana=0, p90~10-20)
+      - Age/Education/Income/GenHlth: categorical weighted con pesos reales
+
+    El resultado produce un drift score <20% porque las distribuciones son
+    estadísticamente similares a la referencia de entrenamiento.
+    """
+    def _binary(p_yes: float) -> int:
+        return random.choices([0, 1], weights=[1 - p_yes, p_yes])[0]
+
+    def _zero_inflated(p_zero: float, max_val: int = 30) -> int:
+        if random.random() < p_zero:
+            return 0
+        # Exponencial discreta sesgada hacia valores bajos
+        return min(max_val, int(random.expovariate(1 / 7)) + 1)
+
+    return [
+        _binary(0.429),           # HighBP:               43% sí
+        _binary(0.424),           # HighChol:             42% sí
+        _binary(0.963),           # CholCheck:            96% sí
+        round(max(12.0, min(98.0, random.gauss(28.4, 5.5))), 1),  # BMI
+        _binary(0.443),           # Smoker:               44% sí
+        _binary(0.041),           # Stroke:                4% sí
+        _binary(0.094),           # HeartDiseaseorAttack:  9% sí
+        _binary(0.757),           # PhysActivity:         76% sí
+        _binary(0.634),           # Fruits:               63% sí
+        _binary(0.811),           # Veggies:              81% sí
+        _binary(0.056),           # HvyAlcoholConsump:     6% sí
+        _binary(0.951),           # AnyHealthcare:        95% sí
+        _binary(0.084),           # NoDocbcCost:           8% sí
+        # GenHlth: 1=excelente(18%) 2=muy buena(35%) 3=buena(30%) 4=regular(12%) 5=mala(5%)
+        random.choices([1, 2, 3, 4, 5], weights=[0.179, 0.351, 0.298, 0.124, 0.048])[0],
+        _zero_inflated(0.73),     # MentHlth: 73% son 0 días
+        _zero_inflated(0.68),     # PhysHlth: 68% son 0 días
+        _binary(0.168),           # DiffWalk:             17% sí
+        _binary(0.440),           # Sex:                  44% hombre
+        # Age: categorías 1-13 (18-24 hasta 80+), distribución real BRFSS
+        random.choices(
+            list(range(1, 14)),
+            weights=[0.022, 0.030, 0.044, 0.054, 0.064, 0.078,
+                     0.104, 0.122, 0.131, 0.127, 0.093, 0.063, 0.068]
+        )[0],
+        # Education: 1-6, mayoría nivel 5-6 (bachillerato/universidad)
+        random.choices([1, 2, 3, 4, 5, 6],
+                       weights=[0.001, 0.016, 0.037, 0.247, 0.276, 0.423])[0],
+        # Income: 1-8, mayoría niveles 7-8 (>$50k)
+        random.choices([1, 2, 3, 4, 5, 6, 7, 8],
+                       weights=[0.039, 0.046, 0.063, 0.079, 0.102, 0.144, 0.170, 0.356])[0],
+    ]
+
+
 _PERFIL_FN = {
     "bajo":    _perfil_bajo_riesgo,
     "moderado": _perfil_moderado_riesgo,
@@ -199,15 +262,18 @@ def main() -> None:
                         help="Segundos de ejecución (0 = infinito hasta Ctrl+C)")
     parser.add_argument("--rps",      type=float, default=2.0,
                         help="Peticiones por segundo base (default: 2)")
+    parser.add_argument("--mode",     default="production", choices=["production", "synthetic"],
+                        help="production: distribuciones reales BRFSS, drift bajo; "
+                             "synthetic: perfiles exagerados, drift alto (default: production)")
     parser.add_argument("--mix",      default="50:30:20",
-                        help="Porcentaje BAJO:MODERADO:ALTO (default: 50:30:20)")
+                        help="Solo en modo synthetic. BAJO:MODERADO:ALTO (default: 50:30:20)")
     parser.add_argument("--wave",     action="store_true", default=True,
                         help="Variar el ritmo en onda senoidal (activo por defecto)")
     parser.add_argument("--no-wave",  dest="wave", action="store_false",
                         help="Ritmo constante sin variación")
     args = parser.parse_args()
 
-    # Parsear mix
+    # Parsear mix (solo relevante en modo synthetic)
     try:
         parts = [int(x) for x in args.mix.split(":")]
         assert len(parts) == 3 and sum(parts) == 100
@@ -230,8 +296,10 @@ def main() -> None:
 
     print(f"DIRA Traffic Generator")
     print(f"  URL      : {args.url}")
+    print(f"  Modo     : {args.mode}")
     print(f"  RPS base : {args.rps}")
-    print(f"  Mix      : bajo={mix[0]}% mod={mix[1]}% alto={mix[2]}%")
+    if args.mode == "synthetic":
+        print(f"  Mix      : bajo={mix[0]}% mod={mix[1]}% alto={mix[2]}%")
     print(f"  Duración : {'∞ (Ctrl+C para parar)' if not deadline else f'{args.duration}s'}")
     print(f"  Onda     : {'sí' if args.wave else 'no'}")
     print()
@@ -252,7 +320,10 @@ def main() -> None:
         current_rps = max(0.2, args.rps * factor)
         delay = 1.0 / current_rps
 
-        features = _pick_perfil(mix)
+        if args.mode == "production":
+            features = _perfil_produccion()
+        else:
+            features = _pick_perfil(mix)
         nivel, latency = _send(args.url, features)
         stats.record(nivel, latency)
         req_idx += 1

@@ -82,7 +82,7 @@ spec:
         - alert: DiraInferHighLatency
           expr: |
             histogram_quantile(0.95,
-              sum(rate(http_request_duration_seconds_bucket{job="dira-infer", handler="/infer"}[5m]))
+              sum(rate(http_request_duration_seconds_bucket{job="dira-infer", handler="/v2/models/modelo_diabetes_DIRA/infer"}[5m]))
               by (le)
             ) > 0.5
           for: 5m
@@ -138,18 +138,43 @@ spec:
       interval: 60s
       rules:
 
-        # Alerta cuando Evidently detecta deriva de datos significativa.
-        # El umbral 0.20 está alineado con DRIFT_THRESHOLD en drift_check.py:
-        # cuando la alerta dispara, el CronJob ya habrá intentado el reentrenamiento.
-        # 'for: 0m' dispara inmediatamente — el drift ya es evidencia suficiente.
-        - alert: DiraDataDriftDetected
-          expr: dira_data_drift_score > 0.20
+        # ZONA VERDE (<20%): deriva dentro del rango normal.
+        # 'for: 10m' exige estabilidad antes de notificar para evitar falsos positivos
+        # en la transición justo después de un reentrenamiento.
+        # Suprimida automáticamente si DiraDataDriftWarning o DiraDataDriftCritical
+        # siguen activas (ver inhibit_rules en values-prometheus.yaml).
+        - alert: DiraDriftNormalizado
+          expr: dira_data_drift_score > 0 and dira_data_drift_score <= 0.20
+          for: 10m
+          labels:
+            severity: info
+          annotations:
+            summary: "Deriva normalizada — score={{ $value | humanizePercentage }}"
+            description: "El score de deriva lleva >10 min por debajo del 20%. La distribución de datos es similar al dataset de entrenamiento. Sistema funcionando correctamente."
+
+        # ZONA AMARILLA (20-30%): deriva leve, vigilar evolución.
+        # No dispara reentrenamiento automático — es una advertencia temprana.
+        # 'for: 0m' notifica inmediatamente al detectar el cruce del umbral del 20%.
+        - alert: DiraDataDriftWarning
+          expr: dira_data_drift_score > 0.20 and dira_data_drift_score <= 0.30
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Deriva de datos leve (score={{ $value | humanizePercentage }})"
+            description: "El score de deriva está entre el 20% y el 30%. Vigilar evolución: si continúa subiendo superará el umbral crítico y se disparará el reentrenamiento."
+
+        # ZONA ROJA (>30%): deriva crítica, el CronJob lanza reentrenamiento automático.
+        # DRIFT_THRESHOLD en drift_check.py también está en 0.30 para ser consistente.
+        # 'for: 0m' dispara inmediatamente — con >30% el modelo puede estar degradado.
+        - alert: DiraDataDriftCritical
+          expr: dira_data_drift_score > 0.30
           for: 0m
           labels:
             severity: critical
           annotations:
-            summary: "Deriva de datos detectada (score={{ $value | humanize }})"
-            description: "El {{ $value | humanizePercentage }} de las variables han derivado respecto al dataset de entrenamiento. El CronJob habrá disparado reentrenamiento automático."
+            summary: "Deriva de datos crítica (score={{ $value | humanizePercentage }})"
+            description: "Más del 30% de las variables han derivado. El CronJob habrá disparado reentrenamiento automático vía GitHub Actions."
 
         # Alerta si más del 50% de las predicciones recientes son de alto riesgo.
         # Puede indicar un cambio real en la población o datos de entrada erróneos.
