@@ -242,7 +242,6 @@ def trigger_retraining(drift_score: float) -> None:
             },
             "spec": {
                 "function": f"{MLRUN_PROJECT}/{MLRUN_FUNCTION}",
-                "handler": "mlrun_train",
                 "parameters": {
                     "data_path":    TRAIN_DATA_PATH,
                     "model_path":   TRAIN_MODEL_PATH,
