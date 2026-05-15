@@ -64,32 +64,28 @@ spec:
                   value: {{ .Values.monitoring.pushgatewayUrl | quote }}
 
                 # Umbral de drift para disparar el reentrenamiento automático.
-                # Si share_of_drifted_columns > threshold → workflow_dispatch
+                # Si share_of_drifted_columns > threshold → submit_job a MLRun
                 - name: DRIFT_THRESHOLD
                   value: {{ .Values.monitoring.driftThreshold | quote }}
 
-                # Repositorio de GitHub en formato "usuario/repo"
-                # Necesario para construir la URL de workflow_dispatch
-                - name: GITHUB_REPO
-                  value: {{ .Values.monitoring.githubRepo | quote }}
+                # ── MLRun: reentrenamiento automático ─────────────────────────
+                # URL interna del API de MLRun, accesible desde dentro del clúster.
+                - name: MLRUN_DBPATH
+                  value: {{ .Values.config.mlrunDbPath | quote }}
 
-                # Rama sobre la que se disparará el reentrenamiento
-                - name: GITHUB_BRANCH
-                  value: {{ .Values.monitoring.githubBranch | quote }}
-
-                # Token de GitHub con scope 'workflow' para disparar el CI/CD.
-                # Se lee del Secret 'dira-github-secret' creado manualmente:
-                #   kubectl create secret generic dira-github-secret \
-                #     --from-literal=token=<PAT> -n mlrun
-                # optional: true → el CronJob arranca aunque el secret no exista
-                # (en ese caso el feedback loop queda deshabilitado pero el drift
-                # check y las métricas siguen funcionando)
-                - name: GITHUB_TOKEN
-                  valueFrom:
-                    secretKeyRef:
-                      name: dira-github-secret
-                      key: token
-                      optional: true
+                # Parámetros del job de entrenamiento (deben coincidir con mlrun_project.py)
+                - name: DATA_DIR
+                  value: {{ .Values.config.dataDir | quote }}
+                - name: DATA_FILENAME
+                  value: {{ .Values.config.dataFilename | quote }}
+                - name: MODEL_PATH
+                  value: {{ .Values.config.modelPath | quote }}
+                - name: RANDOM_STATE
+                  value: {{ .Values.config.randomState | quote }}
+                - name: N_ITER
+                  value: {{ .Values.config.nIter | quote }}
+                - name: CV_FOLDS
+                  value: {{ .Values.config.cvFolds | quote }}
 
               volumeMounts:
                 # Montar el model-pvc en /model para acceder a inference_log.csv
