@@ -60,7 +60,7 @@ Descargable en [Kaggle – Diabetes Health Indicators Dataset](https://www.kaggl
 | 8080 | MLRun API (NodePort interno) |
 | 8060 | MLRun UI (port-forward local, solo para monitorización) |
 | 9000 | Minio (almacenamiento de artefactos) |
-| 30090 | Prometheus (NodePort) |
+| 30091 | Prometheus (NodePort) |
 | 30030 | Grafana (NodePort) |
 | 30093 | Alertmanager (NodePort) |
 
@@ -412,6 +412,7 @@ En **Settings → Secrets and variables → Actions → New repository secret**:
 | `DOCKERHUB_USERNAME` | Tu usuario de Docker Hub |
 | `DOCKERHUB_TOKEN` | Access token de Docker Hub (no la contraseña) |
 | `MLRUN_DBPATH` | URL del API de MLRun, p.ej. `http://192.168.1.x:PORT` |
+| `DIRA_GH_PAT` | PAT de GitHub con scope `workflow` (feedback loop de reentrenamiento) |
 
 > Para obtener un token de Docker Hub: **Docker Hub → Account Settings → Security → New Access Token**.
 >
@@ -421,6 +422,8 @@ En **Settings → Secrets and variables → Actions → New repository secret**:
 > export IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
 > echo "http://${IP}:${PORT}"
 > ```
+>
+> Para crear el PAT (`DIRA_GH_PAT`): **GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens**, con permiso `Actions: write` sobre el repositorio DIRA.
 
 ### 13.3 Comportamiento del pipeline
 
@@ -456,18 +459,27 @@ GitHub → Actions → DIRA CI/CD → Run workflow → ✓ Forzar lanzamiento de
 
 ### 14.1 Instalar kube-prometheus-stack
 
+El stack requiere dos ficheros de valores: `values-prometheus.yaml` (versionado en git) y `values-secrets.yaml` (gitignoreado, contiene credenciales reales). Crear primero el fichero de secretos a partir del ejemplo:
+
+```bash
+cp helm/monitoring/values-secrets.yaml.example helm/monitoring/values-secrets.yaml
+# Editar helm/monitoring/values-secrets.yaml con el token del bot de Telegram,
+# el chat_id y la contraseña de Grafana
+```
+
 ```bash
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
 helm repo update
 
 helm install monitoring prometheus-community/kube-prometheus-stack \
   --namespace monitoring --create-namespace \
-  -f helm/monitoring/values-prometheus.yaml
+  -f helm/monitoring/values-prometheus.yaml \
+  -f helm/monitoring/values-secrets.yaml
 ```
 
 Acceso una vez desplegado:
-- **Prometheus**: `http://<node-ip>:30090`
-- **Grafana**: `http://<node-ip>:30030` (usuario: `admin`, contraseña: `dira-admin`)
+- **Prometheus**: `http://<node-ip>:30091`
+- **Grafana**: `http://<node-ip>:30030` (usuario: `admin`, contraseña: definida en `values-secrets.yaml`)
 - **Alertmanager**: `http://<node-ip>:30093`
 
 ### 14.2 Instalar Prometheus Pushgateway
@@ -488,18 +500,32 @@ kubectl get prometheusrule -n monitoring
 
 ### 14.4 Configurar Telegram
 
-Antes de instalar el stack, editar `helm/monitoring/values-prometheus.yaml` y rellenar:
+Editar `helm/monitoring/values-secrets.yaml` (nunca el fichero versionado) y rellenar:
 
 ```yaml
-telegram_configs:
-  - bot_token: "TOKEN_DEL_BOT"   # BotFather → /newbot
-    chat_id: 123456789            # ID del grupo o canal destino
+alertmanager:
+  config:
+    receivers:
+      - name: telegram
+        telegram_configs:
+          - bot_token: "TOKEN_DEL_BOT"   # BotFather → /newbot
+            chat_id: 123456789            # ID del grupo o canal destino
+            parse_mode: HTML
 ```
 
 Para obtener el `chat_id` de un grupo, añadir el bot al grupo y consultar:
 ```
 https://api.telegram.org/bot<TOKEN>/getUpdates
 ```
+
+Las alertas configuradas son 10 en total, agrupadas en 4 categorías:
+
+| Categoría | Alertas |
+|---|---|
+| Disponibilidad | `DiraInferDown`, `DiraModelNotLoaded` |
+| Calidad HTTP | `DiraInferHighErrorRate`, `DiraInferHighLatency` |
+| Recursos | `DiraInferHighCPU`, `DiraInferHighMemory` |
+| Modelo/Drift | `DiraDriftNormalizado` (info), `DiraDataDriftWarning` (20-30%), `DiraDataDriftCritical` (>30% + reentrenamiento), `DiraHighRiskSurge` |
 
 ### 14.5 Construir e importar la imagen de drift
 
@@ -510,41 +536,56 @@ docker save dira-drift:latest | sudo k3s ctr images import -
 
 ### 14.6 Crear el secret de GitHub (feedback loop)
 
-El CronJob de drift dispara un reentrenamiento automático vía GitHub Actions cuando detecta deriva. Requiere un PAT con scope `workflow`:
+El CronJob de drift dispara un reentrenamiento automático vía GitHub Actions cuando detecta deriva crítica (>30%). Requiere un PAT con scope `workflow`. El mismo PAT se configura como secret `DIRA_GH_PAT` en GitHub Actions (ver paso 13.2):
 
 ```bash
 kubectl create secret generic dira-github-secret \
   --from-literal=token=<GITHUB_PAT> \
-  --namespace dira
+  --namespace mlrun
 ```
 
-> Crear el PAT en **GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens**, con permiso `Actions: write` sobre el repositorio DIRA.
+> El secret debe crearse en el namespace `mlrun`, donde corre el CronJob de drift (mismo namespace que el PVC `model-pvc`).
 
 ### 14.7 Activar el CronJob de drift
 
-El CronJob se despliega automáticamente con el chart DIRA. Para verificarlo:
+El CronJob se despliega automáticamente con el chart DIRA en el namespace `mlrun`. Para verificarlo:
 
 ```bash
-kubectl get cronjob -n dira
+kubectl get cronjob -n mlrun
 # Esperado: dira-drift-check   0 * * * *   ...
 
 # Forzar una ejecución manual
-kubectl create job --from=cronjob/dira-drift-check drift-manual -n dira
-kubectl logs -n dira -l job-name=drift-manual -f
+kubectl create job --from=cronjob/dira-drift-check drift-manual -n mlrun
+kubectl logs -n mlrun -l job-name=drift-manual -f
 ```
 
-### 14.8 Simular un entorno anómalo
+### 14.8 Generar tráfico y simular deriva
 
-Para probar las alertas de drift y alto riesgo, enviar tráfico anómalo a la API:
+El generador de tráfico `traffic_generator.py` tiene dos modos:
+
+```bash
+# Modo producción: usa distribuciones reales del dataset BRFSS → drift score < 20%
+python src/monitoring/traffic_generator.py \
+  --url http://<node-ip>:<infer-port> \
+  --mode production --duration 0 --rps 2
+
+# Modo sintético: perfiles extremos → drift score ~60-70%
+python src/monitoring/traffic_generator.py \
+  --url http://<node-ip>:<infer-port> \
+  --mode synthetic --duration 300 --rps 3 --mix 60:25:15
+```
+
+> `--duration 0` ejecuta indefinidamente (Ctrl+C para detener). `--mix 60:25:15` indica el porcentaje de perfiles alto/moderado/bajo riesgo en modo sintético.
+
+Para probar el pipeline completo de alertas con inyección de deriva artificial:
 
 ```bash
 python src/monitoring/simulate_anomaly.py \
   --url http://<node-ip>:<infer-port> \
-  --n 200 \
-  --delay 0.05
+  --duration 120
 ```
 
-Tras la ejecución, el CronJob de drift (o la ejecución manual del paso anterior) detectará la deriva y disparará la alerta en Telegram.
+Tras la ejecución, el CronJob de drift (o la ejecución manual del paso anterior) detectará la deriva, empujará métricas al Pushgateway y disparará la alerta en Telegram. Si el drift supera el 30%, también lanzará el reentrenamiento automático vía GitHub Actions.
 
 ---
 
@@ -630,20 +671,28 @@ kubectl get svc -n mlrun mlrun-api -o jsonpath='{.spec.ports[0].nodePort}'
 kubectl logs -n mlrun -l mlrun/class=job --tail=100
 
 # Logs del CronJob de drift
-kubectl logs -n dira -l job-name=dira-drift-check --tail=100
+kubectl logs -n mlrun -l job-name=dira-drift-check --tail=100
 
 # Forzar ejecución manual del drift check
-kubectl create job --from=cronjob/dira-drift-check drift-manual -n dira
+kubectl create job --from=cronjob/dira-drift-check drift-manual -n mlrun
 
-# Simular entorno anómalo
-python src/monitoring/simulate_anomaly.py --url http://<node-ip>:<port> --n 200
+# Tráfico realista (distribuciones BRFSS) — drift score < 20%
+python src/monitoring/traffic_generator.py --url http://<node-ip>:<port> --mode production --rps 2
+
+# Tráfico sintético con deriva artificial — drift score ~60-70%
+python src/monitoring/traffic_generator.py --url http://<node-ip>:<port> --mode synthetic --duration 300 --rps 3
+
+# Simular entorno anómalo (inyección directa de deriva)
+python src/monitoring/simulate_anomaly.py --url http://<node-ip>:<port> --duration 120
 
 # Actualizar parámetros del chart DIRA
 helm upgrade dira helm/dira --namespace dira --set config.nIter=50
 
 # Actualizar configuración de monitorización (ej. umbral de drift)
 helm upgrade monitoring prometheus-community/kube-prometheus-stack \
-  --namespace monitoring -f helm/monitoring/values-prometheus.yaml
+  --namespace monitoring \
+  -f helm/monitoring/values-prometheus.yaml \
+  -f helm/monitoring/values-secrets.yaml
 
 # Desinstalar todo
 helm uninstall dira        --namespace dira
@@ -681,8 +730,11 @@ DIRA/
 │   │       ├── front-service.yaml
 │   │       └── drift-cronjob.yaml # CronJob horario de detección de deriva
 │   └── monitoring/
-│       ├── values-prometheus.yaml # kube-prometheus-stack (Prometheus+Grafana+Alertmanager)
-│       └── dira-rules.yaml        # PrometheusRule: 7 alertas operativas y de modelo
+│       ├── values-prometheus.yaml       # kube-prometheus-stack (Prometheus+Grafana+Alertmanager)
+│       ├── values-secrets.yaml          # credenciales Telegram y Grafana (gitignoreado)
+│       ├── values-secrets.yaml.example  # plantilla de valores secretos
+│       ├── dira-rules.yaml              # PrometheusRule: 10 alertas (disponibilidad, calidad, recursos, drift)
+│       └── grafana-dashboard-dira.yaml  # ConfigMap con dashboard JSON (5 secciones)
 ├── src/
 │   ├── backend/
 │   │   ├── data_ingestion.py
@@ -699,7 +751,8 @@ DIRA/
 │   │       └── app.js
 │   └── monitoring/
 │       ├── drift_check.py         # Evidently + Pushgateway + feedback loop (GitHub Actions)
-│       └── simulate_anomaly.py    # simulación de entorno anómalo
+│       ├── traffic_generator.py   # generador de tráfico (modo production/synthetic)
+│       └── simulate_anomaly.py    # inyección de deriva artificial
 ├── requirements_train.txt         # mlrun==1.10.0, xgboost-cpu, cloudpickle
 ├── requirements_infer.txt         # fastapi, uvicorn, cloudpickle, prometheus-fastapi-instrumentator
 ├── requirements_drift.txt         # evidently, prometheus-client, requests
