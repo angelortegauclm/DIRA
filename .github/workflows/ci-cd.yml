@@ -17,8 +17,8 @@ on:
 
 jobs:
   # ── JOB 1: Build & Push ───────────────────────────────────────────────────
-  # Construye las tres imágenes Docker y las sube a Docker Hub.
-  # Corre en runner de GitHub (ubuntu-latest): no necesita acceso al clúster k3s.
+  # Construye las cuatro imágenes Docker y las sube a Docker Hub.
+  # Corre en el runner self-hosted: tiene Docker disponible y acceso a la red.
   # Las imágenes se etiquetan con el SHA del commit (inmutable) y 'latest' (alias).
   build:
     name: Build & Push Docker Hub
@@ -77,6 +77,18 @@ jobs:
           cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/dira-front:latest
           cache-to:   type=inline
 
+      - name: Build y push – dira-drift
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/drift/Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/dira-drift:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/dira-drift:latest
+          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/dira-drift:latest
+          cache-to:   type=inline
+
   # ── JOB 2: Deploy ─────────────────────────────────────────────────────────
   # Despliega las nuevas imágenes en el clúster k3s.
   # Requiere el runner self-hosted instalado en la misma máquina que k3s,
@@ -88,22 +100,13 @@ jobs:
 
     env:
       TRAIN_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/dira-train:${{ github.sha }}
-      INFER_IMAGE:  ${{ secrets.DOCKERHUB_USERNAME }}/dira-infer:${{ github.sha }}
+      INFER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/dira-infer:${{ github.sha }}
       FRONT_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/dira-front:${{ github.sha }}
+      DRIFT_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/dira-drift:${{ github.sha }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      # Sincronizar el PAT de GitHub al Secret de Kubernetes para el feedback loop.
-      # Así el token se define una sola vez en GitHub Actions y se propaga
-      # automáticamente al CronJob de drift sin gestionarlo manualmente.
-      - name: Sincronizar secret GitHub PAT → Kubernetes
-        run: |
-          kubectl create secret generic dira-github-secret \
-            --from-literal=token=${{ secrets.DIRA_GH_PAT }} \
-            --namespace mlrun \
-            --dry-run=client -o yaml | kubectl apply -f -
 
       # k3s usa containerd, que NO comparte el daemon Docker del host.
       # Las imágenes subidas a Docker Hub deben importarse explícitamente
@@ -114,9 +117,11 @@ jobs:
           docker pull ${{ env.TRAIN_IMAGE }}
           docker pull ${{ env.INFER_IMAGE }}
           docker pull ${{ env.FRONT_IMAGE }}
+          docker pull ${{ env.DRIFT_IMAGE }}
           docker save ${{ env.TRAIN_IMAGE }} | sudo k3s ctr images import -
           docker save ${{ env.INFER_IMAGE }}  | sudo k3s ctr images import -
           docker save ${{ env.FRONT_IMAGE }} | sudo k3s ctr images import -
+          docker save ${{ env.DRIFT_IMAGE }} | sudo k3s ctr images import -
 
       # El CronJob de drift vive en el namespace mlrun (para acceder al model-pvc),
       # pero pertenece al release Helm 'dira'. Si fue creado previamente con
@@ -152,6 +157,7 @@ jobs:
             --namespace dira \
             --create-namespace \
             --set frontend.image=${{ env.FRONT_IMAGE }} \
+            --set monitoring.driftImage=${{ env.DRIFT_IMAGE }} \
             $INFER_ARGS
           # Forzar la recreación del pod del frontend para cargar la nueva imagen
           kubectl rollout restart deployment/dira-front -n dira
